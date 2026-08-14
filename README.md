@@ -108,4 +108,31 @@ ones and older Solr versions.
 Documents follow the Opensolr document model. To inspect the schema:
 **Control Panel → click your index → Configuration → Edit File → schema.xml**.
 
+## How it's tested
+
+Every release is validated against **live Opensolr infrastructure** — no mocks:
+
+- **Unit tests** (offline): location aliases, filter→fq mapping, query building, escaping.
+- **End-to-end suite**: the full write path through the async Data Ingestion
+  queue (queued → server-side enrichment → searchable), semantic / hybrid /
+  lexical retrieval, metadata round-trip, filters, id round-trip (your ids
+  and the Solr `md5(uri)` ids), deletes by id and by query.
+- **Real-corpus validation**: searches run against a 340-document replica of
+  opensolr.com's own production search index. Verified: pure-semantic hits
+  with zero keyword overlap ("how do I get my data back after a disaster" →
+  backup &amp; restore docs), cross-lingual queries (Romanian query → English
+  content), exact-term surfacing in hybrid mode, all four hybrid modes, and
+  the full alpha range 0 → 1.
+- **PDF ingestion**: a real PDF ingested via `rtf:true` — server-side text
+  extraction (13k+ chars), automatic content-type detection, then retrieved
+  with a purely semantic query against its contents.
+
+The engine is exercised live via Orchestra Testbench (real Eloquent models
+on in-memory SQLite): searchable() through the ingestion queue, semantic
+relevance, where() filters, pagination totals, unsearchable() removal.
+
+```bash
+OPENSOLR_EMAIL=... OPENSOLR_API_KEY=... OPENSOLR_INDEX=... vendor/bin/phpunit
+```
+
 MIT license.

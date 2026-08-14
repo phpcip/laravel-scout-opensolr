@@ -70,11 +70,18 @@ class OpensolrClient
         $aliases = ['us' => 'CHICAGO-96', 'de' => 'DE-SOLR-9', 'fi' => 'FINLAND9'];
         $env = $aliases[strtolower($location)] ?? $location;
 
-        return $this->request(self::MGMT_BASE, 'create_index', [
-            'index_name' => $index,
-            'core_type' => 'generic',
-            'server_country' => $env,
-        ]) ?? [];
+        // create_index reads its params from the query string (GET) server-side
+        $response = $this->http->post(self::MGMT_BASE . '/create_index', [
+            'query' => ['index_name' => $index, 'core_type' => 'generic', 'server_country' => $env],
+            'form_params' => ['email' => $this->email, 'api_key' => $this->apiKey],
+            'http_errors' => false,
+        ]);
+        $body = json_decode((string) $response->getBody(), true);
+        if (is_array($body) && ($body['status'] ?? null) === false) {
+            throw new RuntimeException('Opensolr create_index: ' . json_encode($body['msg'] ?? $body));
+        }
+
+        return is_array($body) ? $body : [];
     }
 
     /** @return array<int, array<float>> */
