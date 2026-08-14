@@ -275,9 +275,11 @@ class OpensolrClient
      *
      * Two-step pattern: hybrid retrieval picks the top $ragDocs hits (first
      * $ragWords words of text each), whose title/description/text become the
-     * LLM context — the same pipeline as Opensolr's hosted search UI. Pass
-     * $instruction to fully control the prompt (e.g. "Answer in German,
-     * cite the sources you used"). Returns plain text.
+     * LLM context — the same pipeline as Opensolr's hosted search UI. The
+     * index's saved Search Tuning (Control Panel) applies automatically;
+     * $tuning overrides any knob per call (fw_title, lexical_weight,
+     * search_mode, mm, vector_topk, quality_boost, ...). Pass $instruction
+     * to fully control the prompt. Returns plain text.
      */
     public function aiAnswer(
         string $index,
@@ -286,6 +288,7 @@ class OpensolrClient
         int $ragDocs = 3,
         int $ragWords = 1500,
         ?string $instruction = null,
+        array $tuning = [],
     ): string {
         // Retrieval via the platform's tuned server-side hybrid pipeline
         // (embed_and_search); client-side {!hybrid} when a custom fq is set.
@@ -294,7 +297,7 @@ class OpensolrClient
             $hits = [];
             if ($filterQuery === null) {
                 try {
-                    $body = $this->embedAndSearch($index, $query, $ragDocs);
+                    $body = $this->embedAndSearch($index, $query, $ragDocs, $tuning);
                     $hits = $body['results']['docs'] ?? [];
                 } catch (RuntimeException) {
                     $hits = [];

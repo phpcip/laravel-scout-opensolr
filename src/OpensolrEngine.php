@@ -41,8 +41,9 @@ class OpensolrEngine extends Engine
         int $ragDocs = 3,
         int $ragWords = 1500,
         ?string $instruction = null,
+        array $tuning = [],
     ): string {
-        return $this->client->aiAnswer($this->index, $query, $filterQuery, $ragDocs, $ragWords, $instruction);
+        return $this->client->aiAnswer($this->index, $query, $filterQuery, $ragDocs, $ragWords, $instruction, $tuning);
     }
 
     /** Deterministic ingestion URI for a model document (id = md5(uri)). */
