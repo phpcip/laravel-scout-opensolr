@@ -25,7 +25,15 @@ class OpensolrEngine extends Engine
         protected bool $hybrid = true,
         protected float $alpha = 0.5,
         protected bool $softDelete = false,
+        protected string $mode = 'hybrid',
+        protected bool $ingestWait = false,
     ) {
+    }
+
+    /** Deterministic ingestion URI for a model document (id = md5(uri)). */
+    protected function docUri(string $model, mixed $key): string
+    {
+        return 'https://ingest.opensolr.com/' . $this->index . '/' . rawurlencode($model . '__' . $key);
     }
 
     protected function docId(string $model, mixed $key): string
@@ -55,37 +63,38 @@ class OpensolrEngine extends Engine
         }
 
         $docs = [];
-        $texts = [];
         foreach ($models as $model) {
             $searchable = $model->toSearchableArray();
             if (empty($searchable)) {
                 continue;
             }
-            $meta = array_merge(
-                $searchable,
-                $model->scoutMetadata(),
-            );
-            $texts[] = $this->searchableText($searchable);
-            $docs[] = [
-                'id' => $this->docId($model->searchableAs(), $model->getScoutKey()),
-                'title' => mb_substr($this->searchableText($searchable), 0, 100),
+            $meta = array_merge($searchable, $model->scoutMetadata());
+            $text = $this->searchableText($searchable);
+            $doc = [
+                'uri' => $this->docUri($model->searchableAs(), $model->getScoutKey()),
+                'title' => mb_substr((string) ($meta['title'] ?? $text), 0, 250),
+                'description' => (string) ($meta['description'] ?? mb_substr($text, 0, 200)),
+                'text' => $text ?: ' ',
                 'meta_model' => $model->searchableAs(),
                 'meta_scout_key' => (string) $model->getScoutKey(),
                 'meta_lc_json' => json_encode($meta, JSON_UNESCAPED_UNICODE),
             ] + $this->metaFields($meta);
+            if (!empty($meta['timestamp'])) {
+                $doc['timestamp'] = $meta['timestamp'];
+            }
+            $docs[] = $doc;
         }
 
         if (empty($docs)) {
             return;
         }
 
-        $embeddings = $this->client->batchEmbed($this->index, $texts);
-        foreach ($docs as $i => &$doc) {
-            $doc['text'] = $texts[$i];
-            $doc['embeddings'] = $embeddings[$i];
+        // Data Ingestion API (async): embeddings, sentiment, and all derived
+        // fields are computed server-side; documents become searchable within
+        // ~1 minute. Progress is visible in the Opensolr Control Panel.
+        foreach (array_chunk($docs, 50) as $chunk) {
+            $this->client->ingest($this->index, $chunk, $this->ingestWait);
         }
-
-        $this->client->solrUpdate($this->index, $docs);
     }
 
     /** @return array<string, string> scalar metadata as filterable meta_* fields */
@@ -109,10 +118,11 @@ class OpensolrEngine extends Engine
         if ($models->isEmpty()) {
             return;
         }
-        $ids = $models->map(
-            fn ($model) => $this->docId($model->searchableAs(), $model->getScoutKey())
-        )->values()->all();
-        $this->client->solrUpdate($this->index, ['delete' => $ids]);
+        $parts = $models->map(function ($model) {
+            return '(meta_model:"' . addcslashes($model->searchableAs(), '"\\')
+                . '" AND meta_scout_key:"' . addcslashes((string) $model->getScoutKey(), '"\\') . '")';
+        })->values()->all();
+        $this->client->solrUpdate($this->index, ['delete' => ['query' => implode(' OR ', $parts)]]);
     }
 
     public function search(Builder $builder)
@@ -145,10 +155,14 @@ class OpensolrEngine extends Engine
 
         if ($query === '*') {
             $params['q'] = '*:*';
+        } elseif ($this->mode === 'lexical') {
+            // Pure keyword search — no embedding call, zero AI quota.
+            $clean = str_replace(['{', '}', '"'], ' ', $query);
+            $params['q'] = '{!edismax qf="title^100 description^20 text^1"}' . $clean;
         } else {
             $vector = $this->client->embedQuery($this->index, $query);
             $knn = '{!knn f=embeddings topK=' . $k . '}' . json_encode($vector);
-            if ($this->hybrid) {
+            if ($this->mode === 'hybrid' && $this->hybrid) {
                 $clean = str_replace(['{', '}', '"'], ' ', $query);
                 $params['q'] = '{!hybrid lexical=$lexicalRaw vector=$vectorQuery mode=union alpha=' . $this->alpha . ' topN=' . $k . '}';
                 $params['lexicalRaw'] = '{!edismax qf="title^100 text^1"}' . $clean;

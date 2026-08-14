@@ -88,4 +88,24 @@ Tune in `config/scout-opensolr.php` (publish with
   [`opensolr-haystack`](https://pypi.org/project/opensolr-haystack/) ·
   [`opensolr-mcp`](https://pypi.org/project/opensolr-mcp/)
 
+## How indexing works (Data Ingestion API)
+
+Writes go through Opensolr's [Data Ingestion API](https://opensolr.com/learn/api-data-ingestion/204/data-ingestion-api-push-documents-to-your-opensolr-index-programmatically)
+— the same pipeline the Drupal and WordPress connectors use. It is
+**asynchronous**: models are queued on save, then embeddings, sentiment, and
+all derived fields are computed **server-side**; documents become searchable
+within about a minute (progress visible in the Opensolr Control Panel).
+This fits Scout's queue-based paradigm naturally.
+
+## Lexical-only mode
+
+Set `OPENSOLR_MODE=lexical` for pure keyword search: no embedding calls,
+zero AI quota, and it works on **any** Opensolr index, including non-vector
+ones and older Solr versions.
+
+## Your index schema
+
+Documents follow the Opensolr document model. To inspect the schema:
+**Control Panel → click your index → Configuration → Edit File → schema.xml**.
+
 MIT license.

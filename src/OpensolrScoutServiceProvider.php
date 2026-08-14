@@ -27,6 +27,8 @@ class OpensolrScoutServiceProvider extends ServiceProvider
                 hybrid: (bool) $config->get('scout-opensolr.hybrid', true),
                 alpha: (float) $config->get('scout-opensolr.alpha', 0.5),
                 softDelete: (bool) $config->get('scout.soft_delete', false),
+                mode: (string) $config->get('scout-opensolr.mode', 'hybrid'),
+                ingestWait: (bool) $config->get('scout-opensolr.ingest_wait', false),
             );
         });
     }

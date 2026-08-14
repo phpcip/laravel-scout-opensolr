@@ -102,6 +102,51 @@ class OpensolrClient
         return $out;
     }
 
+
+    /**
+     * Queue documents through the Opensolr Data Ingestion API (async).
+     * Embeddings and derived fields are computed server-side. Max 50/batch.
+     * With $wait=true, polls ingestStatus until the job completes.
+     */
+    public function ingest(string $index, array $documents, bool $wait = false, int $timeout = 180): array
+    {
+        $response = $this->http->post(self::AI_BASE . '/ingest', [
+            'json' => [
+                'email' => $this->email,
+                'api_key' => $this->apiKey,
+                'core_name' => $index,
+                'documents' => $documents,
+            ],
+            'http_errors' => false,
+        ]);
+        $body = json_decode((string) $response->getBody(), true);
+        if (!is_array($body) || ($body['status'] ?? null) === false) {
+            throw new RuntimeException('Opensolr ingest: ' . substr((string) $response->getBody(), 0, 300));
+        }
+        if ($wait && !empty($body['job_id'])) {
+            $deadline = time() + $timeout;
+            while (time() < $deadline) {
+                $st = $this->ingestStatus($body['job_id']);
+                $state = (int) ($st['job']['state'] ?? 0);
+                if ($state === 1) {
+                    return $body;
+                }
+                if (in_array($state, [3, 4], true)) {
+                    throw new RuntimeException('Opensolr ingest job failed/stopped: ' . json_encode($st['job'] ?? []));
+                }
+                sleep(5);
+            }
+            throw new RuntimeException("Opensolr ingest: job {$body['job_id']} not completed within {$timeout}s");
+        }
+
+        return $body;
+    }
+
+    public function ingestStatus(string $jobId): array
+    {
+        return $this->request(self::AI_BASE, 'ingest_status', ['job_id' => $jobId]) ?? [];
+    }
+
     /** @return array<float> */
     public function embedQuery(string $index, string $text): array
     {

@@ -26,4 +26,13 @@ return [
     // Semantic <-> lexical balance for hybrid: 0 = all semantic, 1 = all lexical.
     'alpha' => env('OPENSOLR_ALPHA', 0.5),
 
+    // Search mode: hybrid | semantic | lexical.
+    // "lexical" = pure keyword search: no embedding calls, zero AI quota,
+    // and works on ANY Opensolr index, including non-vector ones.
+    'mode' => env('OPENSOLR_MODE', 'hybrid'),
+
+    // Block until the ingestion queue finishes each write (~1 minute).
+    // Leave false in production — Scout works fine with async indexing.
+    'ingest_wait' => env('OPENSOLR_INGEST_WAIT', false),
+
 ];

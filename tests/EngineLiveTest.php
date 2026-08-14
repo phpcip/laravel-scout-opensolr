@@ -26,6 +26,7 @@ class EngineLiveTest extends TestCase
         $app['config']->set('scout-opensolr.email', getenv('OPENSOLR_EMAIL'));
         $app['config']->set('scout-opensolr.api_key', getenv('OPENSOLR_API_KEY'));
         $app['config']->set('scout-opensolr.index', getenv('OPENSOLR_INDEX'));
+        $app['config']->set('scout-opensolr.ingest_wait', true);
         $app['config']->set('database.default', 'testing');
     }
 
