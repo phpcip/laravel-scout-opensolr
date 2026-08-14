@@ -223,6 +223,23 @@ class OpensolrClient
     }
 
     /**
+     * Server-side one-shot: embed the query, run the platform's tuned hybrid
+     * search (same machinery as the hosted search UI), return ranked docs.
+     */
+    public function embedAndSearch(string $index, string $query, int $rows = 10, array $params = []): array
+    {
+        $body = $this->request(self::AI_BASE, 'embed_and_search', array_merge([
+            'index_name' => $index,
+            'q' => $query,
+            'rows' => $rows,
+            'in' => 'all',
+            'fresh' => 'no',
+        ], $params));
+
+        return is_array($body) ? $body : [];
+    }
+
+    /**
      * Hybrid (BM25 + kNN) search via the native {!hybrid} parser. The query
      * is embedded server-side; scores are fused per document on the Solr side.
      */
@@ -270,10 +287,24 @@ class OpensolrClient
         int $ragWords = 1500,
         ?string $instruction = null,
     ): string {
+        // Retrieval via the platform's tuned server-side hybrid pipeline
+        // (embed_and_search); client-side {!hybrid} when a custom fq is set.
         $context = '';
         try {
-            $body = $this->hybridSearch($index, $query, $ragDocs, 'union', 0.5, 'title,description,text', $filterQuery);
-            foreach ($body['response']['docs'] ?? [] as $doc) {
+            $hits = [];
+            if ($filterQuery === null) {
+                try {
+                    $body = $this->embedAndSearch($index, $query, $ragDocs);
+                    $hits = $body['results']['docs'] ?? [];
+                } catch (RuntimeException) {
+                    $hits = [];
+                }
+            }
+            if ($hits === []) {
+                $body = $this->hybridSearch($index, $query, $ragDocs, 'union', 0.5, 'title,description,text', $filterQuery);
+                $hits = $body['response']['docs'] ?? [];
+            }
+            foreach (array_slice($hits, 0, $ragDocs) as $doc) {
                 $flat = static function ($v): string {
                     return is_array($v) ? implode(' ', array_map('strval', $v)) : (string) ($v ?? '');
                 };
