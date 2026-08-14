@@ -221,4 +221,98 @@ class OpensolrClient
 
         return json_decode((string) $response->getBody(), true);
     }
+
+    /**
+     * Hybrid (BM25 + kNN) search via the native {!hybrid} parser. The query
+     * is embedded server-side; scores are fused per document on the Solr side.
+     */
+    public function hybridSearch(
+        string $index,
+        string $query,
+        int $rows = 5,
+        string $mode = 'union',
+        float $alpha = 0.5,
+        string $fl = '*,score',
+        ?string $fq = null,
+    ): array {
+        $clean = str_replace(['{', '}', '"'], ' ', $query);
+        $vector = $this->embedQuery($index, $query);
+        $compact = json_encode($vector);
+        $topN = max($rows, 10);
+        $params = [
+            'q' => "{!hybrid lexical=\$lexicalRaw vector=\$vectorQuery mode={$mode} alpha={$alpha} topN={$topN}}",
+            'lexicalRaw' => '{!edismax qf="title^100 text^1"}' . $clean,
+            'vectorQuery' => "{!knn f=embeddings topK={$topN}}" . $compact,
+            'rows' => $rows,
+            'fl' => $fl,
+        ];
+        if ($fq !== null) {
+            $params['fq'] = $fq;
+        }
+
+        return $this->solrSelect($index, $params);
+    }
+
+    /**
+     * Grounded RAG answer generated only from the index's own content.
+     *
+     * Two-step pattern: hybrid retrieval picks the top $ragDocs hits (first
+     * $ragWords words of text each), whose title/description/text become the
+     * LLM context — the same pipeline as Opensolr's hosted search UI. Pass
+     * $instruction to fully control the prompt (e.g. "Answer in German,
+     * cite the sources you used"). Returns plain text.
+     */
+    public function aiAnswer(
+        string $index,
+        string $query,
+        ?string $filterQuery = null,
+        int $ragDocs = 3,
+        int $ragWords = 1500,
+        ?string $instruction = null,
+    ): string {
+        $context = '';
+        try {
+            $body = $this->hybridSearch($index, $query, $ragDocs, 'union', 0.5, 'title,description,text', $filterQuery);
+            foreach ($body['response']['docs'] ?? [] as $doc) {
+                $flat = static function ($v): string {
+                    return is_array($v) ? implode(' ', array_map('strval', $v)) : (string) ($v ?? '');
+                };
+                $words = array_slice(preg_split('/\s+/', $flat($doc['text'] ?? '')) ?: [], 0, $ragWords);
+                $context .= $flat($doc['title'] ?? '') . ' - '
+                    . $flat($doc['description'] ?? '') . ' - '
+                    . implode(' ', $words) . ' - ';
+            }
+        } catch (RuntimeException) {
+            $context = ''; // fall back to server-side retrieval
+        }
+
+        $params = [
+            'email' => $this->email,
+            'api_key' => $this->apiKey,
+            'index_name' => $index,
+            'query' => $query,
+            'stream' => 'false',
+        ];
+        if ($instruction !== null) {
+            $params['instruction'] = $instruction;
+        }
+        if ($context !== '') {
+            $params['context'] = $context;
+            $params['instruction'] ??= "Read and understand the full context below, and formulate "
+                . "a clear, concise and factual answer to: '{$query}'.\n"
+                . "Answer ONLY from the context. Format the answer in Markdown, use bold "
+                . "section headers where they help, and cite exact titles or names from "
+                . "the context when referring to them.\n";
+        }
+        $response = $this->http->post(self::AI_BASE . '/ai_summary', [
+            'form_params' => $params,
+            'http_errors' => false,
+        ]);
+        if ($response->getStatusCode() >= 400) {
+            throw new RuntimeException('Opensolr ai_summary: HTTP ' . $response->getStatusCode());
+        }
+
+        // The stream is prefixed with flush-padding whitespace — strip it.
+        return trim((string) $response->getBody());
+    }
 }

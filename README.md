@@ -108,6 +108,23 @@ ones and older Solr versions.
 Documents follow the Opensolr document model. To inspect the schema:
 **Control Panel → click your index → Configuration → Edit File → schema.xml**.
 
+## Grounded RAG answers
+
+One call: hybrid retrieval picks the top hits, whose content becomes the LLM
+context, and Opensolr's server-side LLM answers — no LLM key needed:
+
+```php
+use Laravel\Scout\EngineManager;
+
+$answer = app(EngineManager::class)->engine('opensolr')->aiAnswer(
+    'what does the refund policy say?',
+    filterQuery: null,
+    ragDocs: 3,       // how many hybrid hits feed the LLM (default 3)
+    ragWords: 1500,   // words of text taken from each hit (default 1500)
+    // instruction: 'Answer in German, cite the exact titles you used', // optional
+);
+```
+
 ## How it's tested
 
 Every release is validated against **live Opensolr infrastructure** — no mocks:
@@ -126,6 +143,7 @@ Every release is validated against **live Opensolr infrastructure** — no mocks
 - **PDF ingestion**: a real PDF ingested via `rtf:true` — server-side text
   extraction (13k+ chars), automatic content-type detection, then retrieved
   with a purely semantic query against its contents.
+- **Grounded RAG answers**: `ai_answer` verified end-to-end — a question answerable only from the ingested PDF returns the correct answer, sourced from the PDF's extracted text via hybrid retrieval.
 
 The engine is exercised live via Orchestra Testbench (real Eloquent models
 on in-memory SQLite): searchable() through the ingestion queue, semantic

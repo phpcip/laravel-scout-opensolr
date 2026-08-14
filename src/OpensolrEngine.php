@@ -30,6 +30,21 @@ class OpensolrEngine extends Engine
     ) {
     }
 
+    /**
+     * Grounded RAG answer from the Scout index: hybrid retrieval picks the
+     * top hits, whose content becomes the LLM context. Returns plain text.
+     * Usage: app(EngineManager::class)->engine('opensolr')->aiAnswer('...')
+     */
+    public function aiAnswer(
+        string $query,
+        ?string $filterQuery = null,
+        int $ragDocs = 3,
+        int $ragWords = 1500,
+        ?string $instruction = null,
+    ): string {
+        return $this->client->aiAnswer($this->index, $query, $filterQuery, $ragDocs, $ragWords, $instruction);
+    }
+
     /** Deterministic ingestion URI for a model document (id = md5(uri)). */
     protected function docUri(string $model, mixed $key): string
     {
