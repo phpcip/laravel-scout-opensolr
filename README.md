@@ -94,7 +94,9 @@ Writes go through Opensolr's [Data Ingestion API](https://opensolr.com/learn/api
 — the same pipeline the Drupal and WordPress connectors use. It is
 **asynchronous**: models are queued on save, then embeddings, sentiment, and
 all derived fields are computed **server-side**; documents become searchable
-within about a minute (progress visible in the Opensolr Control Panel).
+within about a minute. Progress is visible in **Control Panel → Data
+Ingestion** — a per-job status board with detailed document counts — and
+via the `ingestStatus` API.
 This fits Scout's queue-based paradigm naturally.
 
 ## Lexical-only mode
