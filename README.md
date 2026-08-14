@@ -4,6 +4,8 @@
 [Opensolr](https://opensolr.com) — managed Apache Solr with **server-side
 embeddings** and **hybrid (BM25 + kNN) search**.
 
+**See it live (real news index, hybrid + AI answer):** https://search.opensolr.com/news__dense?q=how+am+I+supposed+to+save+money%3F
+
 Your models get semantic search that understands meaning — "sleepy pets"
 finds the post about cats napping — fused with classic keyword relevance,
 on managed infrastructure. No embedding model, no vector database to run.
