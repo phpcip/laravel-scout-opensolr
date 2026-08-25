@@ -332,12 +332,25 @@ class OpensolrClient
         }
         if ($context !== '') {
             $params['context'] = $context;
-            $params['instruction'] ??= "Read and understand the full context below, and formulate "
-                . "a clear, concise and factual answer to: '{$query}'.\n"
-                . "Answer ONLY from the context. Format the answer in Markdown, use bold "
-                . "section headers where they help, and cite exact titles or names from "
-                . "the context when referring to them.\n";
         }
+        // Default instruction (rewritten 2026-08-25). "Clear and concise" made the
+        // model hedge: it would open with a disclaimer that the context does not
+        // cover the query and then answer it anyway. It now has to lead with the
+        // answer and keep the concrete details. Applied whether or not a context
+        // was supplied; passing $instruction overrides it entirely.
+        $params['instruction'] ??= "Answer the query: '{$query}', using only the context below.\n"
+            . "Start with the answer itself. Do not open with a preamble about what the context "
+            . "does or does not address, and never say the context does not cover the query and "
+            . "then answer it anyway.\n"
+            . "Give a substantive answer with the concrete details from the context: who, what, "
+            . "where and when.\n"
+            . "Do not dismiss the query on a technicality. If the context covers something closely "
+            . "related rather than the exact wording used, explain what it does say and how it "
+            . "relates.\n"
+            . "Only if nothing in the context is relevant at all, say so in one sentence and name "
+            . "what the context is about instead.\n"
+            . "Format the answer in Markdown, use bold section headers where they help, and cite "
+            . "exact titles or names from the context when referring to them.\n";
         $response = $this->http->post(self::AI_BASE . '/ai_summary', [
             'form_params' => $params,
             'http_errors' => false,
