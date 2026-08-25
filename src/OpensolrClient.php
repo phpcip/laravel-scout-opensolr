@@ -307,6 +307,23 @@ class OpensolrClient
                 $body = $this->hybridSearch($index, $query, $ragDocs, 'union', 0.5, 'title,description,text', $filterQuery);
                 $hits = $body['response']['docs'] ?? [];
             }
+            // Relevance floor (2026-08-25). Retrieval always returns $ragDocs hits,
+            // so a narrow question arrives with one good match and several
+            // unrelated ones, and the model hedges because most of its context
+            // does not answer the query. Drop anything below half of the best
+            // score; documents without a score are kept.
+            $topScore = 0.0;
+            foreach ($hits as $h) {
+                if (isset($h['score'])) {
+                    $topScore = max($topScore, (float) $h['score']);
+                }
+            }
+            if ($topScore > 0.0) {
+                $hits = array_values(array_filter($hits, static function ($h) use ($topScore) {
+                    return !isset($h['score']) || (float) $h['score'] >= $topScore * 0.5;
+                }));
+            }
+
             foreach (array_slice($hits, 0, $ragDocs) as $doc) {
                 $flat = static function ($v): string {
                     return is_array($v) ? implode(' ', array_map('strval', $v)) : (string) ($v ?? '');
@@ -339,6 +356,8 @@ class OpensolrClient
         // answer and keep the concrete details. Applied whether or not a context
         // was supplied; passing $instruction overrides it entirely.
         $params['instruction'] ??= "Answer the query: '{$query}', using only the context below.\n"
+            . "If any part of the context supports the answer, begin with 'Yes' or with the fact "
+            . "itself. Never begin with 'No' when the context does support it.\n"
             . "Start with the answer itself. Do not open with a preamble about what the context "
             . "does or does not address, and never say the context does not cover the query and "
             . "then answer it anyway.\n"
