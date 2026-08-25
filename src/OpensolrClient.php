@@ -355,23 +355,18 @@ class OpensolrClient
         // cover the query and then answer it anyway. It now has to lead with the
         // answer and keep the concrete details. Applied whether or not a context
         // was supplied; passing $instruction overrides it entirely.
-        $params['instruction'] ??= "Answer the query: '{$query}', using only the context below.\n"
-            . "Do not repeat or restate the question, and do not print it as a heading.\n"
-            . "If the question is a yes or no question and the context supports it, begin with 'Yes'. "
-            . "For any other question, begin with the fact itself, never with 'Yes'. "
-            . "Never begin with 'No' when the context does support the answer.\n"
-            . "Start with the answer itself. Do not open with a preamble about what the context "
-            . "does or does not address, and never say the context does not cover the query and "
-            . "then answer it anyway.\n"
-            . "Give a substantive answer with the concrete details from the context: who, what, "
-            . "where and when.\n"
-            . "Do not dismiss the query on a technicality. If the context covers something closely "
-            . "related rather than the exact wording used, explain what it does say and how it "
-            . "relates.\n"
-            . "Only if nothing in the context is relevant at all, say so in one sentence and name "
-            . "what the context is about instead.\n"
-            . "Format the answer in Markdown, use bold section headers where they help, and cite "
-            . "exact titles or names from the context when referring to them.\n";
+        // Consolidated 2026-08-26: the list had grown to eight overlapping rules and the
+        // small model drowned in them, restating the query and asserting fits the context
+        // never stated. Four rules, tested against the live model before shipping.
+        $params['instruction'] ??= "Answer this query using only the context below: {$query}\n"
+            . "Begin with the answer itself, the specific fact, product or detail. "
+            . "No preamble, no restating the query, no heading.\n"
+            . "Then give the concrete supporting details from the context: names, numbers, "
+            . "sizes, dates. Write two to four sentences.\n"
+            . "If the context holds no answer, say that in the first sentence and name what it "
+            . "does contain instead.\n"
+            . "Never present something as suitable for a purpose the context does not state.\n"
+            . "Format the answer in Markdown and cite exact titles or names from the context.\n";
         $response = $this->http->post(self::AI_BASE . '/ai_summary', [
             'form_params' => $params,
             'http_errors' => false,
