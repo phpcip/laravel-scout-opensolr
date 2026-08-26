@@ -361,12 +361,18 @@ class OpensolrClient
         $params['instruction'] ??= "Answer this query using only the context below: {$query}\n"
             . "Begin with the answer itself, the specific fact, product or detail. "
             . "No preamble, no restating the query, no heading.\n"
-            . "Then give the concrete supporting details from the context: names, numbers, "
-            . "sizes, dates. Write two to four sentences.\n"
+            . "Be thorough: cover every relevant point the context offers, with the concrete "
+            . "details — names, model numbers, measurements, standards, dates.\n"
+            . "Format it for reading, in Markdown: short paragraphs, and a bullet list when the "
+            . "answer is a set of steps, precautions or options, each bullet opening with a bold "
+            . "lead-in naming that item. Never invent generic headings such as 'Overview', "
+            . "'Key Points' or 'Summary'.\n"
+            . "Use only what the context states. Do not add advice, products or standards from "
+            . "your own knowledge.\n"
             . "If the context holds no answer, say that in the first sentence and name what it "
             . "does contain instead.\n"
             . "Never present something as suitable for a purpose the context does not state.\n"
-            . "Format the answer in Markdown and cite exact titles or names from the context.\n";
+            . "Cite exact titles or names from the context when referring to them.\n";
         $response = $this->http->post(self::AI_BASE . '/ai_summary', [
             'form_params' => $params,
             'http_errors' => false,
