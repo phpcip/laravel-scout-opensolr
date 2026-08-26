@@ -328,10 +328,19 @@ class OpensolrClient
                 $flat = static function ($v): string {
                     return is_array($v) ? implode(' ', array_map('strval', $v)) : (string) ($v ?? '');
                 };
-                $words = array_slice(preg_split('/\s+/', $flat($doc['text'] ?? '')) ?: [], 0, $ragWords);
-                $context .= $flat($doc['title'] ?? '') . ' - '
-                    . $flat($doc['description'] ?? '') . ' - '
-                    . implode(' ', $words) . ' - ';
+                // Truncate at the Nth word by CUTTING the original string. Splitting on
+                // whitespace and imploding with single spaces threw away every newline and every
+                // run of indentation, so a page reached the model as one unbroken line with its
+                // paragraphs, lists and code blocks flattened. Text handed to a model has to
+                // arrive as written; the structure is part of the meaning (2026-08-26).
+                $body = $flat($doc['text'] ?? '');
+                if (preg_match_all('/\S+/u', $body, $m, PREG_OFFSET_CAPTURE) && count($m[0]) > $ragWords) {
+                    $lastWord = $m[0][$ragWords - 1];
+                    $body = substr($body, 0, $lastWord[1] + strlen($lastWord[0]));
+                }
+                $context .= $flat($doc['title'] ?? '') . "\n"
+                    . $flat($doc['description'] ?? '') . "\n"
+                    . $body . "\n\n";
             }
         } catch (RuntimeException) {
             $context = ''; // fall back to server-side retrieval
