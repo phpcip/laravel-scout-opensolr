@@ -59,6 +59,31 @@ class OpensolrClient
     public const FRESH_BIAS_FUNCTION = 'recip(max(0,ms(NOW,creation_date)),3.16e-11,1,1)';
 
     /**
+     * Default Fresh Results Bias strength when the app does not set one.
+     */
+    public const FRESH_BIAS_WEIGHT_DEFAULT = 0.5;
+
+    /**
+     * Build the recency function for a 0.0-1.0 weight.
+     *
+     * Mirrors Hybrid_search::fresh_bias_function() on opensolr.com and the same helper in the
+     * Drupal module, the WordPress plugin and the four Python clients. recip(ms, c, 1, 1)
+     * halves at ms = 1/c, so the weight is a HALF-LIFE on a geometric scale: 365 days at 0.0,
+     * 9.6 days at 0.5, 6 hours at 1.0. Apps configure the weight, never the constant.
+     *
+     * @param float|null $weight 0.0-1.0, or null for the default.
+     */
+    public static function freshBiasFunction(?float $weight = null): string
+    {
+        $w = ($weight === null) ? self::FRESH_BIAS_WEIGHT_DEFAULT : (float) $weight;
+        $w = max(0.0, min(1.0, $w));
+        $halfLifeDays = 365.0 * pow(0.25 / 365.0, $w);
+        $c = sprintf('%.4g', 1.0 / ($halfLifeDays * 86400000.0));
+
+        return 'recip(max(0,ms(NOW,creation_date)),' . $c . ',1,1)';
+    }
+
+    /**
      * The four candidate-selection modes the {!hybrid} parser understands.
      *
      * Validated rather than trusted, because the failure is silent: the mode is interpolated

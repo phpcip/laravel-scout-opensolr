@@ -33,6 +33,9 @@ class OpensolrScoutServiceProvider extends ServiceProvider
                 // because the container builds the engine: a constructor flag nothing
                 // ever sets is an option that does not exist.
                 freshBias: (bool) $config->get('scout-opensolr.fresh_bias', false),
+                freshBiasWeight: $config->get('scout-opensolr.fresh_bias_weight') !== null
+                    ? (float) $config->get('scout-opensolr.fresh_bias_weight')
+                    : null,
             );
         });
     }

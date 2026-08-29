@@ -32,6 +32,10 @@ class OpensolrEngine extends Engine
         // than a per-query argument because Scout's Builder has no place to carry search
         // options — the same reason $hybrid, $alpha and $mode live here.
         protected bool $freshBias = false,
+        // How hard the bias pushes, 0.0-1.0. Only consulted when $freshBias is on:
+        // the flag decides WHETHER recency counts, this decides HOW MUCH. Null uses
+        // OpensolrClient::FRESH_BIAS_WEIGHT_DEFAULT.
+        protected ?float $freshBiasWeight = null,
     ) {
     }
 
@@ -211,7 +215,14 @@ class OpensolrEngine extends Engine
         // user's text cannot close the {!boost} block and leave the rest to be parsed
         // as query syntax.
         if ($this->freshBias) {
-            $params['freshBias'] = OpensolrClient::FRESH_BIAS_FUNCTION;
+            // A document with no creation_date evaluates recip() at its maximum, 1.0, so it
+            // is scored as if published this instant and floats to the top. Require a date
+            // rather than silently promoting the ones that have none (2026-08-29).
+            $params['fq'] = array_values(array_unique(array_merge(
+                (array) ($params['fq'] ?? []),
+                ['+creation_date:[* TO *]']
+            )));
+            $params['freshBias'] = OpensolrClient::freshBiasFunction($this->freshBiasWeight);
             $params['freshBiasInner'] = $params['q'];
             $params['q'] = '{!boost b=$freshBias v=$freshBiasInner}';
         }

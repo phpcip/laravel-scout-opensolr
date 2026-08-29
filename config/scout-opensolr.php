@@ -47,6 +47,16 @@ return [
     // search modes above. Turn it on when newer should beat older on a tie.
     'fresh_bias' => env('OPENSOLR_FRESH_BIAS', false),
 
+    /*
+     | How hard Fresh Results Bias pushes, from 0.0 to 1.0. Only used when 'fresh_bias' is
+     | true. It is a HALF-LIFE on a geometric scale: 0.0 is a year (barely visible), 0.5 is
+     | about ten days, 1.0 is six hours — at which point the publication date all but
+     | replaces relevance and the newest matching record wins. News wants a high value, a
+     | product catalogue or a manual wants a low one. Null uses the default of 0.5.
+     | Documents with no creation_date are excluded whenever the bias is on.
+     */
+    'fresh_bias_weight' => env('OPENSOLR_FRESH_BIAS_WEIGHT', null),
+
     // Block until the ingestion queue finishes each write (~1 minute).
     // Leave false in production — Scout works fine with async indexing.
     'ingest_wait' => env('OPENSOLR_INGEST_WAIT', false),
