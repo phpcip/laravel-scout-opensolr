@@ -58,6 +58,17 @@ class OpensolrClient
      */
     public const FRESH_BIAS_FUNCTION = 'recip(max(0,ms(NOW,creation_date)),3.16e-11,1,1)';
 
+    /**
+     * The four candidate-selection modes the {!hybrid} parser understands.
+     *
+     * Validated rather than trusted, because the failure is silent: the mode is interpolated
+     * into the {!hybrid} local params and the Solr plugin does not reject a value it does not
+     * know — it falls back to union. A one-letter typo therefore returned the union result set
+     * with no error anywhere (measured 2026-08-29 on the Python twin: 18 hits where
+     * intersection returns 2). Same list, same reason, in all five packages.
+     */
+    public const HYBRID_MODES = ['union', 'keywords_required', 'meaning_required', 'intersection'];
+
     protected Guzzle $http;
 
     /** @var array<string, array> per-index core info cache */
@@ -307,6 +318,18 @@ class OpensolrClient
         ?string $fq = null,
         bool $freshBias = false,
     ): array {
+        // Validate BEFORE embedding. Both checks are local and free; embedQuery() is a billed
+        // GPU round-trip against the account's AI quota, so rejecting the caller's own typo
+        // afterwards charged them for our argument validation.
+        if (!in_array($mode, self::HYBRID_MODES, true)) {
+            throw new RuntimeException(
+                'mode must be one of ' . implode(', ', self::HYBRID_MODES) . " — got '{$mode}'"
+            );
+        }
+        if ($alpha < 0.0 || $alpha > 1.0) {
+            throw new RuntimeException("alpha must be between 0 and 1 — got {$alpha}");
+        }
+
         $clean = str_replace(['{', '}', '"'], ' ', $query);
         $vector = $this->embedQuery($index, $query);
         $compact = json_encode($vector);
@@ -409,7 +432,11 @@ class OpensolrClient
             'email' => $this->email,
             'api_key' => $this->apiKey,
             'index_name' => $index,
-            'stream' => 'false',
+            // 'no', not 'false': Api_lib::ai_summary() disables streaming on that exact string
+            // and streams for anything else, so 'false' was asking for a stream and getting
+            // one. Nothing broke — Guzzle buffers it and trim() strips the flush padding — but
+            // the parameter did not do what its value said (2026-08-29).
+            'stream' => 'no',
         ];
         if ($instruction !== null) {
             // A caller-supplied instruction is passed through byte for byte — those callers write
