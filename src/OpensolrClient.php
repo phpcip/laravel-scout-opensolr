@@ -18,6 +18,46 @@ class OpensolrClient
     protected const AI_BASE = 'https://api.opensolr.com/solr_manager/api';
     protected const BATCH_EMBED_MAX = 50;
 
+    /**
+     * The default RAG instruction, re-exported from AiPrompt.
+     *
+     * It used to be an inline string inside aiAnswer(), which is how it drifted out of step with
+     * the platform and the sibling packages without anyone noticing: nothing outside the method
+     * body could name it, so no test could assert parity on it. The four Python packages each
+     * expose theirs at module scope; this is the PHP equivalent, aliased rather than copied so
+     * there is still exactly one definition (AiPrompt::DEFAULT_RAG_INSTRUCTION).
+     */
+    public const DEFAULT_RAG_INSTRUCTION = AiPrompt::DEFAULT_RAG_INSTRUCTION;
+
+    /**
+     * Generation temperature for the default prompt.
+     *
+     * 0.1, because every candidate phrasing behind that prompt was scored at 0.1 — the wording
+     * and the temperature were measured together and only hold together.
+     */
+    protected const DEFAULT_RAG_TEMPERATURE = '0.1';
+
+    /**
+     * Fresh Results Bias — recency as a MULTIPLICATIVE score boost on creation_date.
+     *
+     * The single definition for this package: OpensolrEngine::performSearch() reads it from
+     * here rather than writing the string out again, so the two can never disagree. Copied
+     * byte for byte from the platform's own Hybrid_search::FRESH_BIAS_FUNCTION, which is what
+     * makes a query built client-side and the same query built server-side rank identically —
+     * change it on the platform and change it here.
+     *
+     * 3.16e-11 is 1/(one year in ms): the multiplier is 1.0 for a document published today,
+     * 0.5 at a year old, 0.33 at two. max(0, ...) is a crash guard rather than a tuning choice —
+     * a creation_date in the future (bad metadata off a crawled page is common) makes ms()
+     * negative, and far enough negative the reciprocal divides by zero and Solr fails the
+     * whole query.
+     *
+     * It re-orders and never filters: numFound is unchanged, and a document with no
+     * creation_date is simply left unboosted rather than dropped. Public because the engine
+     * lives in its own class and is the one place that applies it.
+     */
+    public const FRESH_BIAS_FUNCTION = 'recip(max(0,ms(NOW,creation_date)),3.16e-11,1,1)';
+
     protected Guzzle $http;
 
     /** @var array<string, array> per-index core info cache */
@@ -225,6 +265,20 @@ class OpensolrClient
     /**
      * Server-side one-shot: embed the query, run the platform's tuned hybrid
      * search (same machinery as the hosted search UI), return ranked docs.
+     *
+     * $params carries the per-call Search Tuning overrides on top of the index's saved
+     * settings: fw_title, fw_description, fw_uri, fw_text, fw_text_t, lexical_weight,
+     * vector_weight, vector_topk, search_mode (union / keywords_required /
+     * meaning_required / intersection), quality_boost, min_score, freshness_boost,
+     * fresh_bias, lexical_norm_k, mm (flexible / balanced / strict or raw Solr mm syntax).
+     *
+     * freshness_boost and fresh_bias are two different knobs whose names invite exactly
+     * the confusion this note exists to prevent. freshness_boost is a hard window in DAYS:
+     * anything older is filtered out and numFound drops. fresh_bias filters nothing — it
+     * multiplies each score by a recency curve on creation_date, so recent documents win
+     * ties and near-ties while everything older stays reachable, and a document with no
+     * creation_date is simply left unboosted. Pass fresh_bias => 1 (the server also accepts
+     * 'yes'/'true'/'on'); it is off unless asked for.
      */
     public function embedAndSearch(string $index, string $query, int $rows = 10, array $params = []): array
     {
@@ -251,6 +305,7 @@ class OpensolrClient
         float $alpha = 0.5,
         string $fl = '*,score',
         ?string $fq = null,
+        bool $freshBias = false,
     ): array {
         $clean = str_replace(['{', '}', '"'], ' ', $query);
         $vector = $this->embedQuery($index, $query);
@@ -266,6 +321,16 @@ class OpensolrClient
         if ($fq !== null) {
             $params['fq'] = $fq;
         }
+        // Fresh Results Bias wraps the FUSED query so the recency multiplier reaches every
+        // candidate, the vector-only ones included — an edismax bf would only ever touch the
+        // lexical sub-query. The inner query moves into its own parameter and is referenced by
+        // v=$..., so a '}' in the user's text cannot close the {!boost} block. Same shape as
+        // OpensolrEngine::performSearch() and as the four Python clients.
+        if ($freshBias) {
+            $params['freshBias'] = self::FRESH_BIAS_FUNCTION;
+            $params['freshBiasInner'] = $params['q'];
+            $params['q'] = '{!boost b=$freshBias v=$freshBiasInner}';
+        }
 
         return $this->solrSelect($index, $params);
     }
@@ -274,114 +339,117 @@ class OpensolrClient
      * Grounded RAG answer generated only from the index's own content.
      *
      * Two-step pattern: hybrid retrieval picks the top $ragDocs hits (first
-     * $ragWords words of text each), whose title/description/text become the
-     * LLM context — the same pipeline as Opensolr's hosted search UI. The
-     * index's saved Search Tuning (Control Panel) applies automatically;
-     * $tuning overrides any knob per call (fw_title, lexical_weight,
-     * search_mode, mm, vector_topk, quality_boost, ...). Pass $instruction
-     * to fully control the prompt. Returns plain text.
+     * $ragWords words of text each), which AiPrompt turns into the fenced,
+     * numbered context and the prompt around it — the same pipeline, and the
+     * same bytes, as Opensolr's hosted search UI. The index's saved Search
+     * Tuning (Control Panel) applies automatically; $tuning overrides any knob
+     * per call (fw_title, lexical_weight, search_mode, mm, vector_topk,
+     * quality_boost, freshness_boost, fresh_bias, ... — the full list is on
+     * embedAndSearch() above, along with why freshness_boost, which filters by a
+     * date window, and fresh_bias, which only re-orders, are not the same knob).
+     * Pass $instruction to fully control the prompt. Returns plain text.
+     *
+     * $ragDocs is four to match the platform. It was three here alone, which
+     * meant this package answered from one document fewer than every other
+     * door onto the same index — and the instruction tells the model how many
+     * documents it was given, so the count has to be the real one.
      */
     public function aiAnswer(
         string $index,
         string $query,
         ?string $filterQuery = null,
-        int $ragDocs = 3,
+        int $ragDocs = 4,
         int $ragWords = 1500,
         ?string $instruction = null,
         array $tuning = [],
     ): string {
         // Retrieval via the platform's tuned server-side hybrid pipeline
         // (embed_and_search); client-side {!hybrid} when a custom fq is set.
-        $context = '';
+        $hits = [];
+        $hl = [];
         try {
-            $hits = [];
             if ($filterQuery === null) {
                 try {
                     $body = $this->embedAndSearch($index, $query, $ragDocs, $tuning);
                     $hits = $body['results']['docs'] ?? [];
+                    // Highlight fragments, keyed by document id.
+                    $hl = $body['results']['hl'] ?? [];
                 } catch (RuntimeException) {
                     $hits = [];
                 }
             }
             if ($hits === []) {
-                $body = $this->hybridSearch($index, $query, $ragDocs, 'union', 0.5, 'title,description,text', $filterQuery);
+                // text_t is requested alongside text because the context builder concatenates the
+                // two. Asking only for 'title,description,text' meant the fallback path could
+                // never see a text_t field at all, so its 50-byte test was dead code and this
+                // path silently handed the model a thinner context than the primary one — the
+                // exact kind of divergence the golden fixture exists to catch. The Python twins
+                // ask for all four fields; so does this one now (2026-08-29).
+                $body = $this->hybridSearch($index, $query, $ragDocs, 'union', 0.5, 'title,description,text,text_t', $filterQuery);
                 $hits = $body['response']['docs'] ?? [];
-            }
-            // Relevance floor (2026-08-25). Retrieval always returns $ragDocs hits,
-            // so a narrow question arrives with one good match and several
-            // unrelated ones, and the model hedges because most of its context
-            // does not answer the query. Drop anything below half of the best
-            // score; documents without a score are kept.
-            $topScore = 0.0;
-            foreach ($hits as $h) {
-                if (isset($h['score'])) {
-                    $topScore = max($topScore, (float) $h['score']);
-                }
-            }
-            if ($topScore > 0.0) {
-                $hits = array_values(array_filter($hits, static function ($h) use ($topScore) {
-                    return !isset($h['score']) || (float) $h['score'] >= $topScore * 0.5;
-                }));
-            }
-
-            foreach (array_slice($hits, 0, $ragDocs) as $doc) {
-                $flat = static function ($v): string {
-                    return is_array($v) ? implode(' ', array_map('strval', $v)) : (string) ($v ?? '');
-                };
-                // Truncate at the Nth word by CUTTING the original string. Splitting on
-                // whitespace and imploding with single spaces threw away every newline and every
-                // run of indentation, so a page reached the model as one unbroken line with its
-                // paragraphs, lists and code blocks flattened. Text handed to a model has to
-                // arrive as written; the structure is part of the meaning (2026-08-26).
-                $body = $flat($doc['text'] ?? '');
-                if (preg_match_all('/\S+/u', $body, $m, PREG_OFFSET_CAPTURE) && count($m[0]) > $ragWords) {
-                    $lastWord = $m[0][$ragWords - 1];
-                    $body = substr($body, 0, $lastWord[1] + strlen($lastWord[0]));
-                }
-                $context .= $flat($doc['title'] ?? '') . "\n"
-                    . $flat($doc['description'] ?? '') . "\n"
-                    . $body . "\n\n";
+                // The fallback runs no highlighting component, so there are no fragments to pair
+                // with these documents — drop anything the primary attempt may have left behind.
+                $hl = [];
             }
         } catch (RuntimeException) {
-            $context = ''; // fall back to server-side retrieval
+            // Retrieval failed entirely: send the question with no documents rather than nothing.
+            $hits = [];
+            $hl = [];
         }
+
+        // Context building lives in AiPrompt so a plain PHP script can diff it against the golden
+        // fixture without booting Laravel — see the note on that class. The relevance floor, the
+        // ===== fences, the highlight block and the word cap all live inside it, byte for byte as
+        // on the platform. Nothing here may pre-filter, re-order or slice the hits first: the
+        // floor is measured across the same leading rows that are kept, and the document numbers
+        // are derived from what survives it.
+        $context = AiPrompt::context((array) $hits, (array) $hl, $ragDocs, $ragWords);
 
         $params = [
             'email' => $this->email,
             'api_key' => $this->apiKey,
             'index_name' => $index,
-            'query' => $query,
             'stream' => 'false',
         ];
         if ($instruction !== null) {
-            $params['instruction'] = $instruction;
+            // A caller-supplied instruction is passed through byte for byte — those callers write
+            // a bare directive ("answer in German, cite the exact titles") and wrapping their
+            // words in ours would throw them away. What they do NOT write is the question or the
+            // documents, so this branch composes both onto the end itself, in the platform's own
+            // order and with the platform's own labels, and still sends ONE field.
+            //
+            // It used to send `context` (and rely on `query`) as separate form fields and let
+            // Api_lib::ai_summary() join them. That stopped working the moment `query` was
+            // dropped from the shared params for the default branch: the override branch went
+            // out with documents and no question at all. Doing the composition here removes the
+            // dependency on what the other branch happens to send, matches what the four Python
+            // clients do, and keeps the wire format identical across every package.
+            // trim() on both, matching Api_lib::ai_summary() and the Python clients exactly —
+            // the guard has to test the same string it would append, or a context that differs
+            // only by trailing whitespace gets appended twice.
+            $prompt = $instruction;
+            $q = trim($query);
+            $c = trim($context);
+            if ($q !== '' && !str_contains($prompt, $q)) {
+                $prompt .= "\n\nQUERY:\n" . $q;
+            }
+            if ($c !== '' && !str_contains($prompt, $c)) {
+                $prompt .= "\n\nCONTENT:\n" . $c;
+            }
+            $params['instruction'] = $prompt;
+            // 0.1 on this branch too. It was absent, so the server fell back to 0.2 and the one
+            // call site in five repos that ran warmer than everything else was this one.
+            $params['temperature'] = self::DEFAULT_RAG_TEMPERATURE;
+        } else {
+            // The instruction IS the whole prompt (2026-08-26): documents first, question last,
+            // and no context or query field alongside it. Sent as their own fields, the platform
+            // appends them AFTER the instruction under a CONTENT: label, which puts the documents
+            // last — the exact inversion of the ordering that was measured. Removing the trailing
+            // question slot cost the runner-up phrasing 4 of its 7 adversarial points, so this is
+            // not cosmetic. Temperature travels with the wording: both were scored together.
+            $params['instruction'] = AiPrompt::instruction($context, $query);
+            $params['temperature'] = self::DEFAULT_RAG_TEMPERATURE;
         }
-        if ($context !== '') {
-            $params['context'] = $context;
-        }
-        // Default instruction (rewritten 2026-08-25). "Clear and concise" made the
-        // model hedge: it would open with a disclaimer that the context does not
-        // cover the query and then answer it anyway. It now has to lead with the
-        // answer and keep the concrete details. Applied whether or not a context
-        // was supplied; passing $instruction overrides it entirely.
-        // Consolidated 2026-08-26: the list had grown to eight overlapping rules and the
-        // small model drowned in them, restating the query and asserting fits the context
-        // never stated. Four rules, tested against the live model before shipping.
-        $params['instruction'] ??= "Answer this query using only the context below: {$query}\n"
-            . "Begin with the answer itself, the specific fact, product or detail. "
-            . "No preamble, no restating the query, no heading.\n"
-            . "Be thorough: cover every relevant point the context offers, with the concrete "
-            . "details — names, model numbers, measurements, standards, dates.\n"
-            . "Format it for reading, in Markdown: short paragraphs, and a bullet list when the "
-            . "answer is a set of steps, precautions or options, each bullet opening with a bold "
-            . "lead-in naming that item. Never invent generic headings such as 'Overview', "
-            . "'Key Points' or 'Summary'.\n"
-            . "Use only what the context states. Do not add advice, products or standards from "
-            . "your own knowledge.\n"
-            . "If the context holds no answer, say that in the first sentence and name what it "
-            . "does contain instead.\n"
-            . "Never present something as suitable for a purpose the context does not state.\n"
-            . "Cite exact titles or names from the context when referring to them.\n";
         $response = $this->http->post(self::AI_BASE . '/ai_summary', [
             'form_params' => $params,
             'http_errors' => false,

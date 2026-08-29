@@ -31,6 +31,13 @@ return [
     // and works on ANY Opensolr index, including non-vector ones.
     'mode' => env('OPENSOLR_MODE', 'hybrid'),
 
+    // Fresh Results Bias: bias the ranking toward recent documents by multiplying
+    // each score by a recency curve on creation_date. It re-orders and never
+    // filters — the hit count is unchanged, nothing old becomes unreachable, and a
+    // document with no creation_date is simply left unboosted. Applies to all three
+    // search modes above. Turn it on when newer should beat older on a tie.
+    'fresh_bias' => env('OPENSOLR_FRESH_BIAS', false),
+
     // Block until the ingestion queue finishes each write (~1 minute).
     // Leave false in production — Scout works fine with async indexing.
     'ingest_wait' => env('OPENSOLR_INGEST_WAIT', false),

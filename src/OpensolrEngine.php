@@ -27,6 +27,11 @@ class OpensolrEngine extends Engine
         protected bool $softDelete = false,
         protected string $mode = 'hybrid',
         protected bool $ingestWait = false,
+        // Fresh Results Bias, off unless the application asks for it
+        // (scout-opensolr.fresh_bias / OPENSOLR_FRESH_BIAS). A constructor flag rather
+        // than a per-query argument because Scout's Builder has no place to carry search
+        // options — the same reason $hybrid, $alpha and $mode live here.
+        protected bool $freshBias = false,
     ) {
     }
 
@@ -34,11 +39,15 @@ class OpensolrEngine extends Engine
      * Grounded RAG answer from the Scout index: hybrid retrieval picks the
      * top hits, whose content becomes the LLM context. Returns plain text.
      * Usage: app(EngineManager::class)->engine('opensolr')->aiAnswer('...')
+     *
+     * $ragDocs mirrors OpensolrClient::aiAnswer() — four, the platform's own
+     * number. A default that disagreed with the client's would silently
+     * override it for every caller coming through Scout, which is all of them.
      */
     public function aiAnswer(
         string $query,
         ?string $filterQuery = null,
-        int $ragDocs = 3,
+        int $ragDocs = 4,
         int $ragWords = 1500,
         ?string $instruction = null,
         array $tuning = [],
@@ -186,6 +195,25 @@ class OpensolrEngine extends Engine
             } else {
                 $params['q'] = $knn;
             }
+        }
+
+        // Fresh Results Bias: multiply the FINAL score by the recency curve on
+        // creation_date, so recent documents win ties and near-ties. Wraps whichever
+        // shape was built above — *:*, edismax, fused {!hybrid} or bare {!knn} —
+        // because {!boost} is the one form all four honour: under {!hybrid} an edismax
+        // bf reaches only the lexical sub-query, where the plugin normalizes it and
+        // scales it by (1-alpha), never touching a candidate that arrived through the
+        // vector leg, and a bare {!knn} has no edismax to read a bf at all.
+        //
+        // Re-orders only, never filters: numFound is unchanged and a document with no
+        // creation_date is simply left unboosted. The inner query moves into its own
+        // parameter and is referenced by v=$... rather than inlined, so a '}' in the
+        // user's text cannot close the {!boost} block and leave the rest to be parsed
+        // as query syntax.
+        if ($this->freshBias) {
+            $params['freshBias'] = OpensolrClient::FRESH_BIAS_FUNCTION;
+            $params['freshBiasInner'] = $params['q'];
+            $params['q'] = '{!boost b=$freshBias v=$freshBiasInner}';
         }
 
         $fq = ['meta_model:"' . addcslashes($model, '"\\') . '"'];

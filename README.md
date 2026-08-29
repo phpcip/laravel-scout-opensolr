@@ -62,8 +62,12 @@ Tune in `config/scout-opensolr.php` (publish with
 `php artisan vendor:publish --tag=scout-opensolr-config`):
 
 ```php
-'hybrid' => true,   // false = pure semantic
-'alpha'  => 0.5,    // 0 = all semantic … 1 = all lexical
+// config/scout-opensolr.php
+return [
+    // ...
+    'hybrid' => env('OPENSOLR_HYBRID', true),  // false = pure semantic
+    'alpha'  => env('OPENSOLR_ALPHA', 0.5),    // 0 = all semantic … 1 = all lexical
+];
 ```
 
 ## How it maps
@@ -123,7 +127,7 @@ use Laravel\Scout\EngineManager;
 $answer = app(EngineManager::class)->engine('opensolr')->aiAnswer(
     'what does the refund policy say?',
     filterQuery: null,
-    ragDocs: 3,       // how many hybrid hits feed the LLM (default 3)
+    ragDocs: 4,       // how many hybrid hits feed the LLM (default 4)
     ragWords: 1500,   // words of text taken from each hit (default 1500)
     // instruction: 'Answer in German, cite the exact titles you used', // optional
 );
@@ -138,13 +142,50 @@ Panel → Index Settings → Search Tuning: semantic↔lexical balance, field
 weights, minimum match, search mode, vector candidate pool, content quality
 boost) → optional per-call overrides via `tuning`:
 
-```
-tuning: ['search_mode' => "keywords_required", 'fw_title' => 0.2,
-        "mm' => "strict", 'vector_topk' => 500, 'quality_boost' => 0.3}
+```php
+$answer = app(EngineManager::class)->engine('opensolr')->aiAnswer(
+    'what does the refund policy say?',
+    tuning: [
+        'search_mode' => 'keywords_required',
+        'fw_title' => 0.2,
+        'mm' => 'strict',
+        'vector_topk' => 500,
+        'quality_boost' => 0.3,
+    ],
+);
 ```
 
 Defaults match the platform's PHP configuration exactly — customize in the
 Control Panel once, or per call from code.
+
+#### Fresh Results Bias
+
+Rank newer documents higher without hiding anything older. Every score is
+multiplied by a recency curve on `creation_date` — full weight for a document
+published today, about half after a year:
+
+```php
+$client->hybridSearch($index, $query, freshBias: true);
+$client->aiAnswer($index, $question, tuning: ['fresh_bias' => 1]);
+```
+
+For Scout-driven searches set it once in `config/scout-opensolr.php`
+(`'fresh_bias' => env('OPENSOLR_FRESH_BIAS', false)`).
+
+It **re-orders and never filters**: the hit count is identical either way,
+nothing old becomes unreachable, and a document with no `creation_date` simply
+keeps its place instead of being pushed to the bottom. It applies to all three
+retrieval shapes — vector-only, keyword-only and the fused hybrid ranking —
+because the boost wraps the final score rather than one half of it. Off by
+default.
+
+This is the same control visitors get as the **Fresh** toggle beside the sort
+options on the hosted Opensolr search page, so a query behaves identically here
+and there.
+
+> `fresh_bias` and `freshness_boost` are two different knobs and the names
+> invite confusion. `freshness_boost` is a hard window in **days** — anything
+> older is filtered out and the hit count drops. `fresh_bias` filters nothing.
 
 ## How it's tested
 

@@ -29,6 +29,10 @@ class OpensolrScoutServiceProvider extends ServiceProvider
                 softDelete: (bool) $config->get('scout.soft_delete', false),
                 mode: (string) $config->get('scout-opensolr.mode', 'hybrid'),
                 ingestWait: (bool) $config->get('scout-opensolr.ingest_wait', false),
+                // Fresh Results Bias — off unless the application opts in. Wired here
+                // because the container builds the engine: a constructor flag nothing
+                // ever sets is an option that does not exist.
+                freshBias: (bool) $config->get('scout-opensolr.fresh_bias', false),
             );
         });
     }
