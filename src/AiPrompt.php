@@ -17,7 +17,7 @@ namespace Opensolr\ScoutOpensolr;
  * The proof, for this package:
  *
  *     fixture.json -> AiPrompt::instruction(AiPrompt::context(...), $query)
- *     md5 = 29f713bc957ae3c37151a7ce545c3d8a   (10099 bytes)
+ *     md5 = 7e70ac630973aa90936de643eacbb365   (10693 bytes)
  *
  * Source of truth: ai_summary_stream() and tika_search() in
  * addons/default/modules/solr_manager/controllers/solr_manager.php on the platform, plus
@@ -46,11 +46,18 @@ final class AiPrompt
         . 'when the question describes the subject in completely different words than a '
         . 'document does, and answer the question based on those. Where more than one of '
         . "them bears on the question, combine what each one adds into a single answer.\n"
-        . 'Write the answer itself, in 2-4 sentences, naming the specific people, teams, '
-        . 'places and numbers involved. Never begin with "Based on" or "According to", and '
-        . 'never end with a sentence about the documents or the context. Do not name '
-        . 'documents, do not say which ones you used, and do not comment on the ones you '
-        . "did not use.\n"
+        . 'Write the answer itself, formatted in Markdown for reading. Begin with one '
+        . 'sentence that answers the question directly. Whenever the answer covers more '
+        . 'than one development, position or fact — which is most of the time — set '
+        . 'the detail out as a Markdown list, each item on its own line opening with a '
+        . 'bold lead-in that names it. Keep it as prose only if there is genuinely just '
+        . 'one thing to say. Be thorough: cover every distinct point the documents offer '
+        . 'that bears on the question, with the concrete details — the people, places, '
+        . 'numbers, dates and named events involved. Do not stop at the first thing you can '
+        . 'say. Never invent generic headings such as "Overview", "Key Points" or '
+        . '"Summary". Never begin with "Based on" or "According to", and never end with '
+        . 'a sentence about the documents or the context. Do not name documents, do not say '
+        . "which ones you used, and do not comment on the ones you did not use.\n"
         . 'Only if not one of the {document_count} documents is about the question, reply with '
         . 'a single sentence that starts "There is no information about" and then names '
         . "what they cover instead.\n\n"
