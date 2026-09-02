@@ -142,7 +142,9 @@ ones and older Solr versions.
 
 ## Your index schema
 
-Documents follow the Opensolr document model. To inspect the schema:
+Documents follow the Opensolr document model. The whole schema, every field and every type suffix,
+is explained in the [Index Schema Reference](https://opensolr.com/opensolr-platform-user-documentation/schema-reference).
+To inspect your own copy:
 **Control Panel → click your index → Configuration → Edit File → schema.xml**.
 
 ## Grounded RAG answers
