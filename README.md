@@ -140,6 +140,34 @@ Set `OPENSOLR_MODE=lexical` for pure keyword search: no embedding calls,
 zero AI quota, and it works on **any** Opensolr index, including non-vector
 ones and older Solr versions.
 
+## Search by image
+
+Search with a **photo** instead of a text query. Opensolr reads the picture
+three ways — visual labels (what it depicts), OCR text (words printed on it),
+and any barcode / QR code — and turns that into words. Nothing new is stored in
+Solr; the picture simply becomes a query you run through the normal search.
+
+```php
+use Opensolr\ScoutOpensolr\OpensolrClient;
+
+$client = new OpensolrClient(config('scout-opensolr.email'), config('scout-opensolr.api_key'));
+
+// What the picture reads as (labels, OCR text, barcodes) — no search yet.
+// Accepts a file path or raw image bytes:
+$read = $client->imageToWords('my-index', storage_path('app/photo.jpg'));
+// ['text' => 'red running shoe', 'mode' => 'clip',
+//  'labels' => ['running shoe', 'sneaker'], 'codes' => ['0123456789012']]
+
+// Feed those words into the ordinary hybrid search:
+$body = $client->embedAndSearch('my-index', $read['text'], 5, ['search_mode' => 'union']);
+$docs = $body['response']['docs'];
+```
+
+Pick which reading drives the search by choosing which field of `$read` you
+search with — `text` (the engine's choice), `labels` (what it depicts), or
+`codes` (an exact barcode match). `imageToText()` returns the raw API response
+if you need the thumbnails and every label.
+
 ## Your index schema
 
 Documents follow the Opensolr document model. The whole schema, every field and every type suffix,

@@ -529,6 +529,33 @@ try {
             'hybridSearch(fl): only the requested fields came back — ' . brief(array_keys($docs[0] ?? [])));
     });
 
+    step('imageToWords() — a photo becomes text / labels / codes', function () use ($client) {
+        Rate::reserve(1); // one image_to_text call to the AI box
+        // imageToWords accepts a file path or raw bytes; the shipped test photo
+        // has "OPENSOLR" printed on it, so the engine reads real words off it.
+        $read = $client->imageToWords(DEMO_INDEX, __DIR__ . '/test_image.jpg');
+        check(is_array($read), 'imageToWords(): returns an array — ' . gettype($read));
+        check(is_string($read['text'] ?? null) && trim((string) ($read['text'] ?? '')) !== '',
+            'imageToWords(): the picture yielded words — ' . brief($read['text'] ?? ''));
+        check(in_array($read['mode'] ?? null, ['clip', 'ocr'], true),
+            'imageToWords(): mode is clip or ocr — ' . brief($read['mode'] ?? ''));
+        check(is_array($read['labels'] ?? null), 'imageToWords(): labels is a list — ' . count($read['labels'] ?? []) . ' labels');
+        check(is_array($read['codes'] ?? null), 'imageToWords(): codes is a list — ' . count($read['codes'] ?? []) . ' codes');
+    });
+
+    step('search by image — words from a photo drive a normal search', function () use ($client) {
+        Rate::reserve(2); // image_to_text, then one embed_and_search on the resulting words
+        // The developer-side flow: read the picture into words, then run those
+        // words through the ordinary hybrid search. No image vector is stored.
+        $read = $client->imageToWords(DEMO_INDEX, __DIR__ . '/test_image.jpg');
+        $q = trim((string) ($read['text'] ?? ''));
+        check($q !== '', 'search by image: the photo produced a text query — ' . brief($q));
+        $body = $client->embedAndSearch(DEMO_INDEX, $q, 3, ['search_mode' => 'union']);
+        check(($body['status'] ?? null) === true, 'search by image: the search on those words ran — status true');
+        $docs = $body['response']['docs'] ?? [];
+        check(is_array($docs), 'search by image: results came back as a list — ' . count($docs) . ' docs');
+    });
+
     step('aiAnswer() — default prompt', function () use ($client) {
         Rate::reserve(2); // embed_and_search + ai_summary
         $q = 'Who did Roger Federer share a hotel room with on his first US Open trip, and who beat him in the junior singles final?';

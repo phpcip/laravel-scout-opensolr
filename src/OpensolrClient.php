@@ -316,6 +316,63 @@ class OpensolrClient
      * creation_date is simply left unboosted. Pass fresh_bias => 1 (the server also accepts
      * 'yes'/'true'/'on'); it is off unless asked for.
      */
+    /**
+     * Turn an image into search words via the Opensolr image_to_text API.
+     *
+     * The picture is read three ways server-side and the answer carries all of them:
+     * `text` (the words to search with — OCR text when the picture is mostly text,
+     * otherwise the top visual labels), `mode` ("clip"/"ocr"), `labels` (the CLIP
+     * visual labels, present even in OCR mode) and `codes` (barcodes / QR codes).
+     * No image vector is stored: the picture simply becomes words the normal search runs.
+     *
+     * @return array The raw image_to_text response.
+     */
+    public function imageToText(string $index, string $imageBase64, int $topK = 8): array
+    {
+        $body = $this->request(self::AI_BASE, 'image_to_text', [
+            'index_name' => $index,
+            'image' => $imageBase64,
+            'top_k' => $topK,
+        ]);
+
+        return is_array($body) ? $body : [];
+    }
+
+    /**
+     * Read an image (a file path or raw image bytes) and return what it was turned
+     * into, ready to feed to a normal Scout search:
+     *   ['text' => best words, 'mode' => 'clip'|'ocr', 'labels' => [...], 'codes' => [...]]
+     *
+     * Typical use:  $words = $client->imageToWords($index, $path);  Model::search($words['text'])->get();
+     * Pick `labels` for what the picture depicts, `text` for OCR, or a value from `codes` for a barcode.
+     */
+    public function imageToWords(string $index, string $image, int $topK = 8): array
+    {
+        $bytes = (strlen($image) < 2048 && @is_file($image)) ? (string) file_get_contents($image) : $image;
+        $ans = $this->imageToText($index, base64_encode($bytes), $topK);
+
+        $labels = [];
+        foreach (($ans['labels'] ?? []) as $l) {
+            if (is_array($l) && !empty($l['label'])) {
+                $labels[] = $l['label'];
+            }
+        }
+        $codes = [];
+        foreach (($ans['codes'] ?? []) as $c) {
+            $text = is_array($c) ? ($c['text'] ?? null) : (is_string($c) ? $c : null);
+            if ($text !== null && $text !== '') {
+                $codes[] = $text;
+            }
+        }
+
+        return [
+            'text' => trim((string) ($ans['text'] ?? '')),
+            'mode' => $ans['mode'] ?? 'clip',
+            'labels' => $labels,
+            'codes' => $codes,
+        ];
+    }
+
     public function embedAndSearch(string $index, string $query, int $rows = 10, array $params = []): array
     {
         $body = $this->request(self::AI_BASE, 'embed_and_search', array_merge([
