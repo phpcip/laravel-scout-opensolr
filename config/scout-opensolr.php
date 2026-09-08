@@ -17,7 +17,7 @@ return [
     // Anything created there is deleted after 3 days, automatically. The account is
     // shared publicly — other people can change or delete what you create. Limits are
     // per index and small on purpose: 200 MB bandwidth, 50 MB disk. For a private
-    // index that persists: https://opensolr.com/register (free 15-day trial, no card).
+    // index that persists: https://opensolr.com/register (free forever, no card).
 
     // Opensolr account credentials (Account > API in the control panel).
     'email' => env('OPENSOLR_EMAIL', ''),

@@ -28,7 +28,7 @@ OPENSOLR_INDEX=myapp__dense
 ```
 
 Create a vector-enabled index (locations: us, de, fi) in the
-[Opensolr control panel](https://opensolr.com) — free 15-day trial, no card.
+[Opensolr control panel](https://opensolr.com) — free forever, no card.
 Then Scout works exactly as documented:
 
 ```php
@@ -80,7 +80,7 @@ Know what you are working with:
   tutorial and a proof of concept, and it will not carry an application.
 
 When you want an index that is private, yours and still there next week, get your own
-key — [free 15-day trial, no card](https://opensolr.com/register) — and change the two
+key — [free forever, no card](https://opensolr.com/register) — and change the two
 variables above. Nothing else in your code changes.
 
 ## Hybrid search
