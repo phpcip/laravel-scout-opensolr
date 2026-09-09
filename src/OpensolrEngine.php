@@ -182,23 +182,41 @@ class OpensolrEngine extends Engine
             'fl' => '*,score',
         ];
 
+        // Search operators (+word, -word, +"phrase", -"phrase") come out of the text once, for
+        // every shape below. See OpensolrClient::parseOperators() for why they cannot stay
+        // inside the query on any path that involves a vector.
+        $ops = OpensolrClient::parseOperators($query);
+        // Nothing left once the operators are removed ("-refurbished" alone): the operators ARE
+        // the query. Hand the whole string to edismax, which understands them natively, and
+        // emit no filters.
+        $ops_only     = $ops['has_ops'] && strlen($ops['base']) < 2;
+        $lexical_text = (!$ops['has_ops'] || $ops_only) ? $query : $ops['base'];
+
         if ($query === '*') {
             $params['q'] = '*:*';
-        } elseif ($this->mode === 'lexical') {
+        } elseif ($this->mode === 'lexical' || $ops_only) {
             // Pure keyword search — no embedding call, zero AI quota.
-            $clean = str_replace(['{', '}', '"'], ' ', $query);
-            $params['q'] = '{!edismax qf="title^100 description^20 text^1"}' . $clean;
+            // Bound by reference (2026-09-09) instead of inlined: inlining meant a '}' in the
+            // caller's text closed the local-param block, which is why braces AND quotes were
+            // stripped first — and stripping the quotes silently broke every phrase query.
+            $params['uq'] = $lexical_text;
+            $params['q']  = '{!edismax qf="title^100 description^20 text^1" v=$uq}';
         } else {
-            $vector = $this->client->embedQuery($this->index, $query);
+            // The embedder must never see an operator — it has no concept of negation, so a
+            // '-' term reads as one more word and pulls results towards what was excluded.
+            $vector = $this->client->embedQuery($this->index, $ops['has_ops'] ? $ops['base'] : $query);
             $knn = '{!knn f=embeddings topK=' . $k . '}' . json_encode($vector);
             if ($this->mode === 'hybrid' && $this->hybrid) {
-                $clean = str_replace(['{', '}', '"'], ' ', $query);
+                $params['uq'] = $lexical_text;
                 $params['q'] = '{!hybrid lexical=$lexicalRaw vector=$vectorQuery mode=union alpha=' . $this->alpha . ' topN=' . $k . '}';
-                $params['lexicalRaw'] = '{!edismax qf="title^100 text^1"}' . $clean;
+                $params['lexicalRaw'] = '{!edismax qf="title^100 text^1" v=$uq}';
                 $params['vectorQuery'] = $knn;
             } else {
                 $params['q'] = $knn;
             }
+            // Operators become filters on both vector-bearing shapes. On the pure-kNN shape
+            // this is the only thing that can honour them at all — no edismax in that query.
+            OpensolrClient::applySearchOperators($params, $ops);
         }
 
         // Fresh Results Bias: multiply the FINAL score by the recency curve on
@@ -227,7 +245,14 @@ class OpensolrEngine extends Engine
             $params['q'] = '{!boost b=$freshBias v=$freshBiasInner}';
         }
 
-        $fq = ['meta_model:"' . addcslashes($model, '"\\') . '"'];
+        // Seeded from whatever is ALREADY in $params (2026-09-09), not from an empty array.
+        // Two earlier steps put filters there — the search-operator filters and Fresh Results
+        // Bias's "must have a creation_date" clause — and the assignment at the end of this
+        // block used to drop both on the floor.
+        $fq = array_merge(
+            (array) ($params['fq'] ?? []),
+            ['meta_model:"' . addcslashes($model, '"\\') . '"']
+        );
         foreach ($builder->wheres as $key => $where) {
             // Scout >=11 stores [field, operator, value]; Scout 10 stored field => value.
             if (is_array($where)) {
