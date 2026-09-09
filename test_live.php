@@ -333,6 +333,42 @@ try {
     // -----------------------------------------------------------------------------------------
     section('AiPrompt — the cross-repo prompt contract (offline, no API calls)');
     // -----------------------------------------------------------------------------------------
+    step('parseOperators() / applySearchOperators() — pure, no network', function () {
+        $cases = [
+            ['did juventus win that match? -Ruben', 'did juventus win that match?', [], ['Ruben']],
+            ['+laptop +"13 inch" -refurbished', '', ['laptop', '"13 inch"'], ['refurbished']],
+            ['laptop -"open box" gaming', 'laptop gaming', [], ['"open box"']],
+            // a '-' mid-token is part of the word, not an operator
+            ['e-mail covid-19 1+1 formula', 'e-mail covid-19 1+1 formula', [], []],
+            // a '-' INSIDE a quoted phrase belongs to the phrase
+            ['"foo -bar" baz', '"foo -bar" baz', [], []],
+            // a lone sign, or an empty operand, is plain text
+            ['cafea + - fara +"" zahar', 'cafea + - fara +"" zahar', [], []],
+        ];
+        $bad = [];
+        foreach ($cases as [$raw, $base, $req, $exc]) {
+            $got = OpensolrClient::parseOperators($raw);
+            if ($got['base'] !== $base || $got['required'] !== $req || $got['excluded'] !== $exc
+                || $got['has_ops'] !== (bool) ($req || $exc)) {
+                $bad[] = $raw;
+            }
+        }
+        check($bad === [],
+            'parseOperators(): ' . count($cases) . ' queries split exactly, hyphenated words and quoted "-" left alone'
+            . ($bad ? ' — WRONG: ' . brief($bad) : ''));
+
+        $params = ['q' => '{!hybrid}', 'fq' => ['meta_kind:news']];
+        OpensolrClient::applySearchOperators($params, OpensolrClient::parseOperators('news +"press release" -rumour'));
+        $fields = OpensolrClient::SEARCH_OPERATOR_FIELDS;
+        check(($params['reqQ0'] ?? null) === '"press release"' && ($params['negQ0'] ?? null) === 'rumour',
+            'applySearchOperators(): operands bound by reference — reqQ0=' . brief($params['reqQ0'] ?? '') . ' negQ0=' . brief($params['negQ0'] ?? ''));
+        check(in_array('{!edismax qf="' . $fields . '" mm="100%" v=$reqQ0}', $params['fq'], true)
+            && in_array('-{!edismax qf="' . $fields . '" mm="100%" v=$negQ0}', $params['fq'], true),
+            'applySearchOperators(): both filters emitted against ' . $fields);
+        check(in_array('meta_kind:news', $params['fq'], true) && $params['q'] === '{!hybrid}',
+            'applySearchOperators(): a pre-existing fq survives and q is untouched');
+    });
+
     step('AiPrompt::context/instruction', function () {
         // doc 2 scores below half of the best of the first topN rows: the relevance floor must
         // drop it, and the numbering must stay dense (1, 2) rather than leaving a gap.
@@ -860,6 +896,61 @@ try {
         $ri = $engine->search($bi);
         check($engine->getTotalCount($ri) === 3,
             'engine->search(): whereIn(category, [gear, food]) matched all 3 — ' . $engine->getTotalCount($ri));
+    });
+
+    step('engine->search() — +/- search operators bind BOTH legs', function () use ($engine, $stub) {
+        // The seeded index is deterministic: 22 is the kimchi row, 11 and 33 are the gear rows.
+        // The query below is deliberately vague so the VECTOR leg pulls all three in — which is
+        // exactly the case where an operator used to leak: as plain edismax syntax it bound only
+        // the keyword leg, and union mode handed the excluded row straight back through the
+        // vector leg. The exclusions here are therefore a real regression test, not a formality.
+        $q = 'how to get ready for a day outdoors';
+
+        $keys = function ($result) {
+            $k = array_map(fn ($d) => (string) $d['meta_scout_key'], $result['response']['docs'] ?? []);
+            sort($k);
+
+            return $k;
+        };
+
+        Rate::reserve(1);
+        $all = $keys($engine->search(new Builder($stub, $q)));
+        check(in_array('22', $all, true),
+            'operators: baseline hybrid search does reach the kimchi row — ' . brief($all));
+
+        Rate::reserve(1);
+        $excl = $keys($engine->search(new Builder($stub, $q . ' -kimchi')));
+        check(!in_array('22', $excl, true),
+            'operators: -kimchi removed the kimchi row even though the vector leg still matches it — ' . brief($excl));
+
+        Rate::reserve(1);
+        $req = $keys($engine->search(new Builder($stub, $q . ' +kimchi')));
+        check($req === ['22'],
+            'operators: +kimchi is genuinely required — only the kimchi row survived — ' . brief($req));
+
+        Rate::reserve(1);
+        $reqPhrase = $keys($engine->search(new Builder($stub, $q . ' +"napa cabbage"')));
+        check($reqPhrase === ['22'],
+            'operators: +"napa cabbage" requires the exact phrase — ' . brief($reqPhrase));
+
+        Rate::reserve(1);
+        $exclPhrase = $keys($engine->search(new Builder($stub, $q . ' -"napa cabbage"')));
+        check(!in_array('22', $exclPhrase, true) && count($exclPhrase) > 0,
+            'operators: -"napa cabbage" excludes on the exact phrase only — ' . brief($exclPhrase));
+
+        // Nothing left to embed once the operators are stripped: the engine drops to pure
+        // keyword search rather than embedding an empty string, and the exclusion still holds.
+        Rate::reserve(0);
+        $only = $keys($engine->search(new Builder($stub, '-kimchi')));
+        check(count($only) > 0 && !in_array('22', $only, true),
+            'operators: a query that is nothing but "-kimchi" still searches and still excludes — ' . brief($only));
+
+        // The operand is bound by reference, so Solr local params inside it stay literal text:
+        // this must neither error nor read another core.
+        Rate::reserve(1);
+        $inj = $engine->search(new Builder($stub, $q . ' -{!join fromIndex=mcp_demo_d1__dense}x'));
+        check(isset($inj['response']),
+            'operators: a "{!join}" operand stayed literal text — ' . count($inj['response']['docs'] ?? []) . ' normal hits');
     });
 
     step('engine search modes — lexical and vector-only', function () use ($client, $stub, $TEMP_INDEX) {
