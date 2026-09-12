@@ -5,6 +5,13 @@ namespace Opensolr\ScoutOpensolr;
 use Illuminate\Support\ServiceProvider;
 use Laravel\Scout\EngineManager;
 
+/**
+ * Registers the "opensolr" Scout engine.
+ *
+ * The engine factory closure must not touch $this: since Laravel 13, Manager::extend() binds
+ * custom driver callbacks to the manager itself, so $this inside the closure is the
+ * EngineManager, not this provider. The application container is captured explicitly.
+ */
 class OpensolrScoutServiceProvider extends ServiceProvider
 {
     public function boot(): void
@@ -15,8 +22,9 @@ class OpensolrScoutServiceProvider extends ServiceProvider
             __DIR__ . '/../config/scout-opensolr.php' => config_path('scout-opensolr.php'),
         ], 'scout-opensolr-config');
 
-        $this->app->make(EngineManager::class)->extend('opensolr', function () {
-            $config = $this->app['config'];
+        $app = $this->app;
+        $this->app->make(EngineManager::class)->extend('opensolr', function () use ($app) {
+            $config = $app['config'];
 
             return new OpensolrEngine(
                 client: new OpensolrClient(
