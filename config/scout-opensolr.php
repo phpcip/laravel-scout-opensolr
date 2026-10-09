@@ -24,8 +24,9 @@ return [
     'api_key' => env('OPENSOLR_API_KEY', ''),
 
     // The vector-enabled Opensolr index used for this application.
-    // Create one in the control panel (locations: us, de, fi) or via
-    // Artisan: php artisan scout:index anything (uses this name).
+    // Create one in a vector region (a server with the Opensolr web crawler, any Solr version; the live
+    // list is the vector_regions API) in the control panel, or via Artisan: php artisan scout:index anything
+    // (uses this name).
     'index' => env('OPENSOLR_INDEX', ''),
 
     // Hybrid search: fuse BM25 keyword scores with semantic kNN per document.

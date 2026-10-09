@@ -422,10 +422,53 @@ class OpensolrClient
         return $this->coreInfo[$index] = $info;
     }
 
-    public function createIndex(string $index, string $location = 'CHICAGO-96'): array
+    /**
+     * The vector regions a new index can go to: the servers with the Opensolr web crawler (webcrawler = 1),
+     * up and enabled, any Solr version, read live from the platform.
+     *
+     * @return array<int, array{environment: string, country: string, solr_version: string}>
+     */
+    public function vectorRegions(): array
     {
-        $aliases = ['us' => 'CHICAGO-96', 'de' => 'DE-SOLR-9', 'fi' => 'FINLAND9'];
-        $env = $aliases[strtolower($location)] ?? $location;
+        $rows = $this->request(self::MGMT_BASE, 'vector_regions');
+
+        return is_array($rows) ? array_values(array_filter($rows, fn ($r) => is_array($r) && !empty($r['environment']))) : [];
+    }
+
+    /**
+     * $location: an environment id from vectorRegions(), or the start of one or of its country ("us", "de",
+     * "fi", "finland"): the first live region that matches, in the platform's order.
+     */
+    public function createIndex(string $index, string $location = 'us'): array
+    {
+        try {
+            $regions = $this->vectorRegions();
+        } catch (RuntimeException $e) {
+            throw new OpensolrException("Opensolr create_index: the vector regions could not be read, so no index was created: {$e->getMessage()}", 0, $e);
+        }
+        if (!$regions) {
+            throw new OpensolrException('Opensolr create_index: the platform lists no vector region right now, so no index was created.');
+        }
+        $want = strtolower(trim($location));
+        $env = null;
+        foreach ($regions as $r) {
+            if (strtolower((string) $r['environment']) === $want) {
+                $env = (string) $r['environment'];
+                break;
+            }
+        }
+        if ($env === null && $want !== '') {
+            foreach ($regions as $r) {
+                if (str_starts_with(strtolower((string) $r['environment']), $want) || str_starts_with(strtolower((string) ($r['country'] ?? '')), $want)) {
+                    $env = (string) $r['environment'];
+                    break;
+                }
+            }
+        }
+        if ($env === null) {
+            $live = implode(', ', array_map(fn ($r) => $r['environment'] . ' (' . ($r['country'] ?? '') . ', Solr ' . ($r['solr_version'] ?? '') . ')', $regions));
+            throw new OpensolrException("Opensolr create_index: '{$location}' is not a vector region, so no index was created. The vector regions are: {$live}.");
+        }
 
         // create_index reads its params from the query string (GET) server-side
         $response = $this->http->post(self::MGMT_BASE . '/create_index', [

@@ -27,7 +27,8 @@ OPENSOLR_API_KEY=your-api-key
 OPENSOLR_INDEX=myapp__dense
 ```
 
-Create a vector-enabled index (locations: us, de, fi) in the
+Create a vector-enabled index in a vector region (a server with the Opensolr web
+crawler, any Solr version; `vector_regions` lists them live) in the
 [Opensolr control panel](https://opensolr.com) — free forever, no card.
 Then Scout works exactly as documented:
 
@@ -143,10 +144,12 @@ for literally.
 
 ## Notes
 
-- Vector-enabled indexes run in Opensolr's vector regions (Solr 9 and newer) —
-  `us` (Chicago), `de` (Germany), `fi` (Finland) and any other region the live
-  `vector_regions` list names. **Additional dedicated regions can be deployed on
-  request** (paid add-on): [support@opensolr.com](mailto:support@opensolr.com).
+- Vector-enabled indexes run in Opensolr's vector regions: the servers with the
+  Opensolr web crawler, whatever their Solr version, listed live by
+  `$client->vectorRegions()` (the `vector_regions` API). `createIndex()` takes an
+  environment id from that list or the start of one or of its country (`us`, `de`,
+  `fi`), matched against the live list. **Additional dedicated regions can be deployed
+  on request** (paid add-on): [support@opensolr.com](mailto:support@opensolr.com).
 - Every index is also plain Apache Solr with the native `/select` API —
   facets, highlighting, spellcheck available beyond Scout.
 - Siblings: [`langchain-opensolr`](https://pypi.org/project/langchain-opensolr/) ·
@@ -210,8 +213,9 @@ To inspect your own copy:
 
 ## Index requirements
 
-Everything the driver does works on an index that is **in a vector region**
-(`us`, `de`, `fi` and the rest of the live `vector_regions` list) and runs the
+Everything the driver does works on an index that is **in a vector region** (a
+server with the Opensolr web crawler, any Solr version; the live `vector_regions`
+list) and runs the
 **Opensolr vector schema** — the configuration every vector index created there
 gets. The driver checks this for you:
 
