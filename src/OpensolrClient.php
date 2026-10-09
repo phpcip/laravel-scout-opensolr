@@ -3,6 +3,9 @@
 namespace Opensolr\ScoutOpensolr;
 
 use GuzzleHttp\Client as Guzzle;
+use GuzzleHttp\Exception\BadResponseException;
+use Illuminate\Contracts\Cache\Repository as CacheRepository;
+use Psr\Log\LoggerInterface;
 use RuntimeException;
 
 /**
@@ -233,15 +236,32 @@ class OpensolrClient
         }
     }
 
+    /** Seconds before a schema check that could not run is tried again (never on every call). */
+    public const SCHEMA_RETRY_SECONDS = 300;
+
     protected Guzzle $http;
 
     /** @var array<string, array> per-index core info cache */
     protected array $coreInfo = [];
 
+    /** @var array<string, array> the schema check of each index, made once */
+    protected array $schemaReports = [];
+
+    /** @var array<string, int> when a schema check could not run */
+    protected array $schemaFailedAt = [];
+
+    /**
+     * $cache keeps each index's schema check between requests ($schemaCheckTtl seconds) and
+     * $logger receives the warning about an index that is not on the Opensolr vector schema;
+     * without them the check is kept for this process and warnings go to PHP's error log.
+     */
     public function __construct(
         protected string $email,
         protected string $apiKey,
         int $timeout = 120,
+        protected ?CacheRepository $cache = null,
+        protected ?LoggerInterface $logger = null,
+        protected int $schemaCheckTtl = 3600,
     ) {
         $this->http = new Guzzle(['timeout' => $timeout]);
     }
@@ -257,13 +277,135 @@ class OpensolrClient
         ]);
         $body = json_decode((string) $response->getBody(), true);
         if (is_array($body) && ($body['status'] ?? null) === false) {
-            throw new RuntimeException("Opensolr {$method}: " . json_encode($body['msg'] ?? $body));
+            $detail = isset($body['detail']) ? ': ' . $body['detail'] : '';
+            throw new OpensolrException("Opensolr {$method}: " . json_encode($body['msg'] ?? $body) . $detail);
         }
         if ($response->getStatusCode() >= 400) {
-            throw new RuntimeException("Opensolr {$method}: HTTP " . $response->getStatusCode());
+            throw new OpensolrException("Opensolr {$method}: HTTP " . $response->getStatusCode());
         }
 
         return $body;
+    }
+
+    /**
+     * Whether an index is ready for this package, and every reason when it is not.
+     *
+     * One request to the platform, which reads the index's schema and compares it with the
+     * Opensolr vector schema. The answer carries 'ready', 'capabilities' (ingestion,
+     * vector_search, pdf_pages, keyword_search), the server, its Solr version, whether the
+     * server is in a vector region, the fields and types that are missing or different,
+     * 'problems' (sentences) and 'fix' (none, apply_schema or new_index, with what to do).
+     */
+    public function checkSchema(string $index): array
+    {
+        $body = $this->request(self::MGMT_BASE, 'check_schema', ['core_name' => $index]);
+
+        return is_array($body) ? $body : [];
+    }
+
+    /**
+     * Install the Opensolr vector schema on an index of a vector region.
+     *
+     * It replaces the index configuration with the one every Opensolr vector index runs, so
+     * Data Ingestion, vector and hybrid search and PDF pages all work on it. An index that
+     * already holds documents needs $force: those documents keep the fields they were written
+     * with and must be sent again. An index outside the vector regions cannot take it: the
+     * error says where to create one. Returns the platform's answer, with the new check.
+     */
+    public function applySchema(string $index, bool $force = false): array
+    {
+        unset($this->schemaReports[$index], $this->schemaFailedAt[$index]);
+        $this->cache?->forget($this->schemaCacheKey($index));
+        $this->cache?->forget($this->schemaCacheKey($index) . ':failed');
+        $body = $this->request(self::MGMT_BASE, 'apply_schema', ['core_name' => $index, 'force' => $force ? '1' : '0']);
+        $check = is_array($body) ? ($body['check'] ?? null) : null;
+        if (is_array($check) && ($check['status'] ?? null) === true) {
+            $this->rememberSchema($index, $check);
+        }
+
+        return is_array($body) ? $body : [];
+    }
+
+    /**
+     * The check of an index, made once and kept (this process, and the cache when there is
+     * one). A check that could not run returns null, is tried again after
+     * SCHEMA_RETRY_SECONDS, and nothing is concluded from it.
+     */
+    public function schemaReport(string $index): ?array
+    {
+        if (isset($this->schemaReports[$index])) {
+            return $this->schemaReports[$index];
+        }
+        $key = $this->schemaCacheKey($index);
+        $cached = $this->cache?->get($key);
+        if (is_array($cached)) {
+            return $this->schemaReports[$index] = $cached;
+        }
+        $failedAt = $this->schemaFailedAt[$index] ?? $this->cache?->get($key . ':failed');
+        if ($failedAt !== null && time() - (int) $failedAt < self::SCHEMA_RETRY_SECONDS) {
+            return null;
+        }
+        try {
+            $report = $this->checkSchema($index);
+        } catch (\Throwable $e) {
+            $this->schemaFailedAt[$index] = time();
+            $this->cache?->put($key . ':failed', time(), self::SCHEMA_RETRY_SECONDS);
+            $this->warn("Opensolr: the schema of index {$index} could not be checked (" . $e->getMessage() . '); working as before, without the check');
+
+            return null;
+        }
+        $this->rememberSchema($index, $report);
+        if (empty($report['ready'])) {
+            $this->warn("Opensolr: index {$index} is not on the Opensolr vector schema: "
+                . trim(implode(' ', (array) ($report['problems'] ?? [])) . ' ' . (string) ($report['fix']['text'] ?? '')));
+        }
+
+        return $report;
+    }
+
+    /**
+     * Throw OpensolrSchemaException when the index's check says it cannot do this. When the
+     * check could not run, nothing is blocked and the operation runs as it always did.
+     */
+    public function requireCapability(string $index, string $capability): void
+    {
+        $report = $this->schemaReport($index);
+        if ($report === null) {
+            return;
+        }
+        if (($report['capabilities'][$capability] ?? null) === false) {
+            throw new OpensolrSchemaException($index, $capability, $report);
+        }
+    }
+
+    /** True only when the index's check says it can (an unknown answer is false). */
+    public function hasCapability(string $index, string $capability): bool
+    {
+        $report = $this->schemaReport($index);
+
+        return (bool) ($report['capabilities'][$capability] ?? false);
+    }
+
+    protected function rememberSchema(string $index, array $report): void
+    {
+        $this->schemaReports[$index] = $report;
+        unset($this->schemaFailedAt[$index]);
+        $this->cache?->put($this->schemaCacheKey($index), $report, max(1, $this->schemaCheckTtl));
+        $this->cache?->forget($this->schemaCacheKey($index) . ':failed');
+    }
+
+    protected function schemaCacheKey(string $index): string
+    {
+        return 'opensolr:schema:' . md5($this->email . "\0" . $index);
+    }
+
+    protected function warn(string $message): void
+    {
+        if ($this->logger) {
+            $this->logger->warning($message);
+        } else {
+            error_log($message);
+        }
     }
 
     public function coreInfo(string $index, bool $refresh = false): array
@@ -332,6 +474,7 @@ class OpensolrClient
      */
     public function ingest(string $index, array $documents, bool $wait = false, int $timeout = 180): array
     {
+        $this->requireCapability($index, 'ingestion');
         $response = $this->http->post(self::AI_BASE . '/ingest', [
             'json' => [
                 'email' => $this->email,
@@ -417,11 +560,15 @@ class OpensolrClient
                 $pairs[] = rawurlencode($key) . '=' . rawurlencode((string) $v);
             }
         }
-        $response = $this->http->post("{$base}/select", [
-            'body' => implode('&', $pairs),
-            'headers' => ['Content-Type' => 'application/x-www-form-urlencoded'],
-            'auth' => $auth,
-        ]);
+        try {
+            $response = $this->http->post("{$base}/select", [
+                'body' => implode('&', $pairs),
+                'headers' => ['Content-Type' => 'application/x-www-form-urlencoded'],
+                'auth' => $auth,
+            ]);
+        } catch (BadResponseException $e) {
+            throw OpensolrSolrException::fromGuzzle($e, $index, 'search');
+        }
 
         return json_decode((string) $response->getBody(), true);
     }
@@ -429,10 +576,14 @@ class OpensolrClient
     public function solrUpdate(string $index, mixed $payload): array
     {
         [$base, $auth] = $this->solrEndpoint($index);
-        $response = $this->http->post("{$base}/update?commit=true", [
-            'json' => $payload,
-            'auth' => $auth,
-        ]);
+        try {
+            $response = $this->http->post("{$base}/update?commit=true", [
+                'json' => $payload,
+                'auth' => $auth,
+            ]);
+        } catch (BadResponseException $e) {
+            throw OpensolrSolrException::fromGuzzle($e, $index, 'update');
+        }
 
         return json_decode((string) $response->getBody(), true);
     }
@@ -551,6 +702,8 @@ class OpensolrClient
             throw new RuntimeException("alpha must be between 0 and 1 — got {$alpha}");
         }
 
+        // An index without the vector fields says so before an embedding is paid for
+        $this->requireCapability($index, 'vector_search');
         $clean = str_replace(['{', '}', '"'], ' ', $query);
         $vector = $this->embedQuery($index, $query);
         $compact = json_encode($vector);

@@ -30,6 +30,10 @@ class OpensolrScoutServiceProvider extends ServiceProvider
                 client: new OpensolrClient(
                     email: $config->get('scout-opensolr.email', env('OPENSOLR_EMAIL', '')),
                     apiKey: $config->get('scout-opensolr.api_key', env('OPENSOLR_API_KEY', '')),
+                    // the index check is kept here between requests, and its warnings go to the app log
+                    cache: $app->bound('cache') ? $app['cache']->store($config->get('scout-opensolr.schema_cache_store')) : null,
+                    logger: $app->bound('log') ? $app['log'] : null,
+                    schemaCheckTtl: (int) $config->get('scout-opensolr.schema_check_ttl', 3600),
                 ),
                 index: $config->get('scout-opensolr.index', ''),
                 hybrid: (bool) $config->get('scout-opensolr.hybrid', true),

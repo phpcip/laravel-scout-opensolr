@@ -65,15 +65,18 @@ export OPENSOLR_API_KEY=420b8b23e7b12dc8ab838932145a5065
 ```
 
 `mcp_demo_d1__dense` is already loaded with 300 news articles, so search, filtering
-and grounded answers work the moment you connect. You also get the full write path:
-create your own index on the account, ingest into it, query it, delete it.
+and grounded answers work the moment you connect. You also get the write path:
+create your own index on the account, ingest into it and query it. Deletion is not
+available on this shared key: no index here can be deleted or reconfigured by hand.
+Whatever you create is removed automatically after 3 days.
 
 Know what you are working with:
 
 - **Anything you create there is deleted after 3 days.** Automatically, without warning
   or export. That includes indexes you created and every document in them.
-- **The account is shared with everyone reading this.** Your index is visible to them,
-  they can change or delete it, and you can do the same to theirs. Never put anything
+- **The account is shared with everyone reading this.** Your index is visible to them
+  and they can add documents to it, as you can to theirs. Nobody can delete or
+  reconfigure an index here (that is switched off for this key), but never put anything
   real, private or client-owned in it.
 - **The limits are per index, and deliberately small.** 200 MB of bandwidth and 50 MB
   of disk per index. Bandwidth is the one you will hit first: it covers a demo, a
@@ -140,10 +143,10 @@ for literally.
 
 ## Notes
 
-- Vector-enabled indexes run on Opensolr's Solr 9.x environments — currently
-  `us` (Chicago), `de` (Germany), `fi` (Finland). **Additional dedicated
-  regions can be deployed on request** (paid add-on):
-  [support@opensolr.com](mailto:support@opensolr.com).
+- Vector-enabled indexes run in Opensolr's vector regions (Solr 9 and newer) —
+  `us` (Chicago), `de` (Germany), `fi` (Finland) and any other region the live
+  `vector_regions` list names. **Additional dedicated regions can be deployed on
+  request** (paid add-on): [support@opensolr.com](mailto:support@opensolr.com).
 - Every index is also plain Apache Solr with the native `/select` API —
   facets, highlighting, spellcheck available beyond Scout.
 - Siblings: [`langchain-opensolr`](https://pypi.org/project/langchain-opensolr/) ·
@@ -165,8 +168,10 @@ This fits Scout's queue-based paradigm naturally.
 ## Lexical-only mode
 
 Set `OPENSOLR_MODE=lexical` for pure keyword search: no embedding calls,
-zero AI quota, and it works on **any** Opensolr index, including non-vector
-ones and older Solr versions.
+zero AI quota. It searches the `title`, `description` and `text` fields, so it
+also runs on an index outside the vector regions or on an older Solr version, as
+long as the index has those fields. Indexing (Data Ingestion) still needs an index
+in a vector region — see [Index requirements](#index-requirements).
 
 ## Search by image
 
@@ -202,6 +207,81 @@ Documents follow the Opensolr document model. The whole schema, every field and 
 is explained in the [Index Schema Reference](https://opensolr.com/opensolr-platform-user-documentation/schema-reference).
 To inspect your own copy:
 **Control Panel → click your index → Configuration → Edit File → schema.xml**.
+
+## Index requirements
+
+Everything the driver does works on an index that is **in a vector region**
+(`us`, `de`, `fi` and the rest of the live `vector_regions` list) and runs the
+**Opensolr vector schema** — the configuration every vector index created there
+gets. The driver checks this for you:
+
+- **Once per index, one request.** The first operation that needs it asks
+  Opensolr what the index can do (`check_schema`); the answer is kept in your
+  Laravel cache for `schema_check_ttl` seconds (default 3600, store
+  `schema_cache_store`). It is never asked on every search. An `OpensolrClient`
+  you build yourself keeps it for the life of the object (pass `cache:` to share it).
+- **It never blocks what works today.** It only stops what cannot work anyway,
+  and before it costs anything:
+  - **indexing** (Data Ingestion) on an index outside the vector regions;
+  - **semantic and hybrid search** on an index without the vector fields — before
+    the query is embedded, so no AI quota is spent on it.
+
+  Keyword search (`OPENSOLR_MODE=lexical`) is never blocked.
+- **If the check cannot run** (network, the platform unreachable), nothing is
+  concluded: the operation runs exactly as it did without the check, and the
+  check is tried again after 5 minutes.
+- An index that is not on the Opensolr vector schema gets **one warning in your
+  log** each time the check runs, with what differs and what to do.
+
+When something cannot work, the driver throws
+`Opensolr\ScoutOpensolr\OpensolrSchemaException` (a `RuntimeException`, like every
+error the driver threw before) with the exact reason, for example:
+
+```
+Index 'myapp__dense' cannot take documents through Data Ingestion. Index myapp__dense
+is on IT-SOLR-9-6 (Milano, Italy), which is not a vector region: Data Ingestion,
+server-side embeddings and hybrid search run only on the servers of a vector region
+(DE-SOLR-9 (Germany, Solr 9.00), FINLAND9 (Finland, Solr 9.60), ...). This index cannot
+be made ready: create a new index in one of the vector regions ..., and send your
+documents there.
+```
+
+`getReport()` on the exception returns the full check. The check carries `ready`,
+`capabilities` (`ingestion`, `vector_search`, `pdf_pages`, `keyword_search`), the
+server and its Solr version, whether it is in a vector region, every field and type
+that is missing or different from the Opensolr vector schema, `problems` and `fix`.
+
+You can run it yourself, and install the schema:
+
+```php
+use Laravel\Scout\EngineManager;
+
+$engine = app(EngineManager::class)->engine('opensolr');
+
+$engine->checkSchema();            // what the index can do, and why not
+$engine->applySchema();            // install the Opensolr vector schema
+$engine->applySchema(force: true); // the same on an index that already holds documents
+```
+
+**Why `applySchema()` exists.** An index of a vector region can still carry an
+older or a different configuration — created before the current schema, or edited
+by hand. `applySchema()` installs the same configuration every Opensolr vector index
+runs, so indexing, semantic and hybrid search and PDF pages all work on it. It
+**replaces the index configuration**: on an index that already holds documents it
+needs `force: true`, and those documents keep the fields they were written with, so
+send them again afterwards (`php artisan scout:import`). The driver never runs it on
+its own.
+
+**An index outside the vector regions cannot take the schema**: indexing,
+server-side embeddings and hybrid search only run there. Create a new index in one of
+the regions the check lists (`php artisan scout:index anything`, or the Opensolr
+control panel) and point `OPENSOLR_INDEX` at it.
+
+Solr's own errors (an HTTP 4xx/5xx from the index) are thrown as
+`OpensolrSolrException` / `OpensolrSolrServerException` with Solr's reason and the
+index name in the message; they are still Guzzle `ClientException` /
+`ServerException`, so code that caught those keeps working. Every exception the
+driver throws on purpose implements `OpensolrExceptionInterface`.
 
 ## Grounded RAG answers
 

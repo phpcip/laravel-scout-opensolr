@@ -59,6 +59,25 @@ class OpensolrEngine extends Engine
         return $this->client->aiAnswer($this->index, $query, $filterQuery, $ragDocs, $ragWords, $instruction, $tuning);
     }
 
+    /**
+     * Whether the Scout index is ready for every feature of the driver, and exactly why not.
+     * Usage: app(EngineManager::class)->engine('opensolr')->checkSchema()
+     */
+    public function checkSchema(): array
+    {
+        return $this->client->checkSchema($this->index);
+    }
+
+    /**
+     * Install the Opensolr vector schema on the Scout index (an index of a vector region). It
+     * replaces the index configuration; an index that holds documents needs $force, and those
+     * documents must be sent again (php artisan scout:import).
+     */
+    public function applySchema(bool $force = false): array
+    {
+        return $this->client->applySchema($this->index, $force);
+    }
+
     /** Deterministic ingestion URI for a model document (id = md5(uri)). */
     protected function docUri(string $model, mixed $key): string
     {
@@ -202,6 +221,8 @@ class OpensolrEngine extends Engine
             $params['uq'] = $lexical_text;
             $params['q']  = '{!edismax qf="title^100 description^20 text^1" v=$uq}';
         } else {
+            // An index without the vector fields says so before an embedding is paid for
+            $this->client->requireCapability($this->index, 'vector_search');
             // The embedder must never see an operator — it has no concept of negation, so a
             // '-' term reads as one more word and pulls results towards what was excluded.
             $vector = $this->client->embedQuery($this->index, $ops['has_ops'] ? $ops['base'] : $query);

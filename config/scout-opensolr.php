@@ -36,8 +36,8 @@ return [
     'alpha' => env('OPENSOLR_ALPHA', 0.5),
 
     // Search mode: hybrid | semantic | lexical.
-    // "lexical" = pure keyword search: no embedding calls, zero AI quota,
-    // and works on ANY Opensolr index, including non-vector ones.
+    // "lexical" = pure keyword search: no embedding calls, zero AI quota; it also runs on
+    // indexes outside the vector regions, as long as they have title, description and text.
     'mode' => env('OPENSOLR_MODE', 'hybrid'),
 
     // Fresh Results Bias: bias the ranking toward recent documents by multiplying
@@ -60,5 +60,12 @@ return [
     // Block until the ingestion queue finishes each write (~1 minute).
     // Leave false in production — Scout works fine with async indexing.
     'ingest_wait' => env('OPENSOLR_INGEST_WAIT', false),
+
+    // What the index can do (vector region, Opensolr vector schema) is checked once per
+    // index — one request to Opensolr — and kept in this cache store (null = the default
+    // store) for this many seconds; never on every search. See "Index requirements" in the
+    // README.
+    'schema_check_ttl' => env('OPENSOLR_SCHEMA_CHECK_TTL', 3600),
+    'schema_cache_store' => env('OPENSOLR_SCHEMA_CACHE_STORE', null),
 
 ];
